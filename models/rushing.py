@@ -5,9 +5,10 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 import nflreadpy as nfl
+from . import data_utils
 from sklearn.linear_model import LinearRegression
 
-SEASONS = [2022, 2023, 2024, 2025]
+SEASONS = [2022, 2023, 2024, 2025, 2026]
 LEAN_FEATS = ["carries_roll", "team_spread", "total_line"]
 
 # rushing yards — tiers in yards (like receiving, but rushing is noisier)
@@ -16,14 +17,14 @@ GAP_ANCHORS = [(0, 0.49), (3, 0.55), (7, 0.61), (15, 0.68), (30, 0.70)]
 
 @st.cache_data(show_spinner="Pulling & preparing NFL data (first run only)...")
 def build_dataset():
-    ps = nfl.load_player_stats(SEASONS).to_pandas()
+    ps = data_utils.load_player_stats(SEASONS)
     rush = ps[ps["carries"].fillna(0) >= 5].copy()
     rush = rush.sort_values(["player_id", "season", "week"]).reset_index(drop=True)
 
     rush["carries_roll"] = (rush.groupby("player_id")["carries"]
                             .transform(lambda s: s.shift(1).rolling(6, min_periods=3).mean()))
 
-    games = nfl.load_schedules(SEASONS).to_pandas()
+    games = data_utils.load_schedules(SEASONS)
     home = games[["season", "week", "home_team", "spread_line", "total_line"]].rename(
         columns={"home_team": "team"})
     home["team_spread"] = home["spread_line"]

@@ -5,9 +5,10 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 import nflreadpy as nfl
+from . import data_utils
 from sklearn.linear_model import LinearRegression
 
-SEASONS = [2022, 2023, 2024, 2025]
+SEASONS = [2022, 2023, 2024, 2025, 2026]
 LEAN_FEATS = ["attempts_roll", "team_spread", "total_line", "wind_eff", "def_pass_roll"]
 
 # passing yards are big numbers — tiers in yards, bigger gaps than receiving
@@ -16,7 +17,7 @@ GAP_ANCHORS = [(0, 0.49), (10, 0.54), (25, 0.60), (50, 0.66), (90, 0.70)]
 
 @st.cache_data(show_spinner="Pulling & preparing NFL data (first run only)...")
 def build_dataset():
-    ps = nfl.load_player_stats(SEASONS).to_pandas()
+    ps = data_utils.load_player_stats(SEASONS)
     qb = ps[ps["position"] == "QB"].copy()
     qb = qb[qb["attempts"].fillna(0) >= 10].copy()
     qb = qb.sort_values(["player_id", "season", "week"]).reset_index(drop=True)
@@ -24,7 +25,7 @@ def build_dataset():
     qb["attempts_roll"] = (qb.groupby("player_id")["attempts"]
                            .transform(lambda s: s.shift(1).rolling(6, min_periods=3).mean()))
 
-    games = nfl.load_schedules(SEASONS).to_pandas()
+    games = data_utils.load_schedules(SEASONS)
     home = games[["season", "week", "home_team", "spread_line", "total_line", "roof", "wind"]].rename(
         columns={"home_team": "team"})
     home["team_spread"] = home["spread_line"]

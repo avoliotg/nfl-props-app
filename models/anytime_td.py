@@ -7,9 +7,10 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 import nflreadpy as nfl
+from . import data_utils
 from sklearn.linear_model import LogisticRegression
 
-SEASONS = [2022, 2023, 2024, 2025]
+SEASONS = [2022, 2023, 2024, 2025, 2026]
 FEATS = ["touches_roll", "td_rate_roll", "is_rb", "is_te"]
 
 # This market is PROBABILITY-based. The shell checks this flag.
@@ -18,7 +19,7 @@ IS_PROBABILITY = True
 
 @st.cache_data(show_spinner="Pulling & preparing NFL data (first run only)...")
 def build_dataset():
-    ps = nfl.load_player_stats(SEASONS).to_pandas()
+    ps = data_utils.load_player_stats(SEASONS)
     s = ps[ps["position"].isin(["WR", "TE", "RB", "QB"])].copy()
     s["total_td"] = s["rushing_tds"].fillna(0) + s["receiving_tds"].fillna(0)
     s["scored"] = (s["total_td"] > 0).astype(int)

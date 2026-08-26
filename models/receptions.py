@@ -5,9 +5,10 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 import nflreadpy as nfl
+from . import data_utils
 from sklearn.linear_model import LinearRegression
 
-SEASONS = [2022, 2023, 2024, 2025]
+SEASONS = [2022, 2023, 2024, 2025, 2026]
 LEAN_FEATS = ["target_share_roll", "targets_roll", "snap_roll",
               "team_spread", "total_line"]
 
@@ -17,7 +18,7 @@ GAP_ANCHORS = [(0, 0.49), (0.5, 0.55), (1.0, 0.60), (2.0, 0.66), (4.0, 0.70)]
 
 @st.cache_data(show_spinner="Pulling & preparing NFL data (first run only)...")
 def build_dataset():
-    ps = nfl.load_player_stats(SEASONS).to_pandas()
+    ps = data_utils.load_player_stats(SEASONS)
     rec = ps[ps["position"].isin(["WR", "TE", "RB"])].copy()
     rec = rec.sort_values(["player_id", "season", "week"]).reset_index(drop=True)
 
@@ -25,14 +26,14 @@ def build_dataset():
         rec[f"{col}_roll"] = (rec.groupby("player_id")[col]
                               .transform(lambda s: s.shift(1).rolling(6, min_periods=3).mean()))
 
-    snaps = nfl.load_snap_counts(SEASONS).to_pandas()
+    snaps = data_utils.load_snap_counts(SEASONS)
     snaps_s = snaps[["season", "week", "team", "player", "offense_pct"]].rename(
         columns={"player": "player_display_name"})
     rec = rec.merge(snaps_s, on=["season", "week", "team", "player_display_name"], how="left")
     rec["snap_roll"] = (rec.groupby("player_id")["offense_pct"]
                         .transform(lambda s: s.shift(1).rolling(6, min_periods=3).mean()))
 
-    games = nfl.load_schedules(SEASONS).to_pandas()
+    games = data_utils.load_schedules(SEASONS)
     home = games[["season", "week", "home_team", "spread_line", "total_line"]].rename(
         columns={"home_team": "team"})
     home["team_spread"] = home["spread_line"]
