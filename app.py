@@ -22,7 +22,8 @@ MODULES = {
 }
 
 st.markdown("<style>h1{color:#e0873a;}</style>", unsafe_allow_html=True)
-st.title("🏈 NFL Props")
+st.title("🔮 OpalScales")
+st.caption("An OpalScales modeling project · 🏈 NFL player prop projections")
 
 market_name = st.selectbox("Market", list(MARKETS.keys()),
                            help="Which prop market to project.")
