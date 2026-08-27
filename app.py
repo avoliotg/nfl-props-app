@@ -42,8 +42,8 @@ else:
     PROJ_LABEL = "Proj Yds"
 st.divider()
 
-tab_board, tab_player, tab_scorecard, tab_top, tab_guide = st.tabs(
-    ["📋 Board", "🔍 Player", "📊 Scorecard", "🎯 Top Plays", "📖 Guide"])
+tab_board, tab_player, tab_scorecard, tab_top, tab_guide, tab_import = st.tabs(
+    ["📋 Board", "🔍 Player", "📊 Scorecard", "🎯 Top Plays", "📖 Guide", "📥 Import"])
 
 TIER_COLORS = {"Pass": "#8a7f70", "Lean": "#e6c14d",
                "Strong": "#4caf72", "Max": "#f0964a"}
@@ -142,7 +142,16 @@ with tab_board:
             input_label = "Your Line ✏️"
 
         board = board.copy()
-        board["your_input"] = None
+        # pre-fill "Your Line" from the imported lines pool (if any)
+        pool = db.get_lines(season, week, market_key)
+        def _prefill(player_name):
+            entry = pool.get(player_name)
+            if not entry:
+                return None
+            if IS_PROB:
+                return entry.get("over_odds")
+            return entry.get("line")
+        board["your_input"] = board["player_display_name"].apply(_prefill)
 
         colcfg = {
             "player_display_name": st.column_config.TextColumn("Player", width="medium"),
@@ -503,3 +512,50 @@ Track everything honestly, and let the results tell you what's working.
 
 *Bet responsibly. This is a tool for informed decisions, not financial advice.*
 """)
+    # ============ IMPORT ============
+with tab_import:
+    st.subheader("📥 Import Lines from CSV")
+    st.caption("Paste CSV from the extraction prompt. Columns: "
+               "player, market, line, over_odds, under_odds. "
+               "Imports are cumulative — re-importing a player updates their line.")
+
+    ic1, ic2 = st.columns(2)
+    with ic1:
+        imp_season = st.number_input("Season", min_value=2020, max_value=2030,
+                                     value=2025, step=1, key="imp_season")
+    with ic2:
+        imp_week = st.number_input("Week", min_value=1, max_value=25,
+                                   value=1, step=1, key="imp_week")
+
+    csv_text = st.text_area(
+        "Paste CSV here", height=200, key="imp_csv",
+        placeholder="player,market,line,over_odds,under_odds\n"
+                    "Ja'Marr Chase,receiving_yards,74.5,-115,-105\n"
+                    "...")
+
+    if st.button("📥 Import", type="primary", key="imp_btn"):
+        if not csv_text.strip():
+            st.warning("Paste some CSV first.")
+        else:
+            import io, csv as _csv
+            try:
+                reader = _csv.DictReader(io.StringIO(csv_text.strip()))
+                rows = [dict(r) for r in reader]
+            except Exception as e:
+                rows = None
+                st.error(f"Couldn't parse CSV: {e}")
+            if rows is not None:
+                if len(rows) == 0:
+                    st.warning("No data rows found (need a header row + at least one line).")
+                else:
+                    result = db.import_lines(rows, imp_season, imp_week)
+                    st.success(f"Imported {result['imported']} line(s) for "
+                               f"{imp_season} Week {imp_week}.")
+                    if result["by_market"]:
+                        breakdown = " · ".join(f"{k}: {v}" for k, v in result["by_market"].items())
+                        st.caption(f"By market — {breakdown}")
+                    if result["bad_market"]:
+                        st.warning("Unrecognized market(s) — these rows were skipped: "
+                                   + ", ".join(sorted(set(result['bad_market']))))
+                    st.cache_data.clear()
+                    st.rerun()
