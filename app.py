@@ -498,7 +498,7 @@ Think of it as a model that *earns* your trust as real data accumulates.
 ### The OpalScales approach
 
 Small edges. Obscure players over stars (the market is sharpest on stars). Discipline over hype.
-Track everything honestly, and let the results — not a good story — tell you what's working.
+Track everything honestly, and let the results tell you what's working.
 
 *Bet responsibly. This is a tool for informed decisions, not financial advice.*
 """)
