@@ -32,7 +32,13 @@ module = MODULES[market_key]
 
 # Is this a probability market (Anytime TD) rather than a yardage/number market?
 IS_PROB = getattr(module, "IS_PROBABILITY", False)
-
+# market-aware label for the projection column
+if IS_PROB:
+    PROJ_LABEL = "Proj TD%"
+elif market_key == "receptions":
+    PROJ_LABEL = "Proj Catches"
+else:
+    PROJ_LABEL = "Proj Yds"
 st.divider()
 
 tab_board, tab_player, tab_scorecard, tab_top = st.tabs(
@@ -144,13 +150,11 @@ with tab_board:
             "position": st.column_config.TextColumn("Pos", width="small"),
             "your_input": st.column_config.NumberColumn(input_label, format="%.1f", width="small"),
         }
-        if IS_PROB:
-            colcfg["projection"] = st.column_config.NumberColumn("Model %", format="%.1f", width="small")
-        else:
-            colcfg["projection"] = st.column_config.NumberColumn("Proj", format="%.1f", width="small")
+        colcfg["projection"] = st.column_config.NumberColumn(PROJ_LABEL, format="%.1f", width="small")
         # volume columns get simple labels
-        vol_labels = {"targets_roll": "Tgts", "snap_roll": "Snap%",
-                      "carries_roll": "Car", "attempts_roll": "Att", "touches_roll": "Tch"}
+        vol_labels = {"targets_roll": "Recent Tgts", "snap_roll": "Recent Snap%",
+                      "carries_roll": "Recent Car", "attempts_roll": "Recent Att",
+                      "touches_roll": "Recent Tch"}
         for vc in vol_cols:
             fmt = "%.0f%%" if vc == "snap_roll" else "%.1f"
             colcfg[vc] = st.column_config.NumberColumn(vol_labels.get(vc, vc), format=fmt, width="small")
@@ -281,7 +285,10 @@ with tab_player:
                       <td style="padding:8px 12px;text-align:left;">{r['opponent_team']}</td>
                       <td style="padding:8px 12px;text-align:left;">{r['projection']:.1f}</td>
                       {actual_cell}{miss_cell}{extra}</tr>"""
-                heads = ["Wk", "Opp", "Proj", "Actual", "Miss"] + [c.replace("_", " ").title() for c in extra_cols]
+                vol_nice = {"targets_roll": "Recent Tgts", "snap_roll": "Recent Snap%",
+                            "carries_roll": "Recent Car", "attempts_roll": "Recent Att",
+                            "touches_roll": "Recent Tch"}
+                heads = ["Wk", "Opp", PROJ_LABEL, "Actual", "Miss"] + [vol_nice.get(c, c.replace("_", " ").title()) for c in extra_cols]
                 header = "".join(
                     f'<th style="padding:10px 12px;text-align:left;background:#e0873a;'
                     f'color:#161310;font-weight:800;font-size:0.78rem;text-transform:uppercase;'
