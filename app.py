@@ -41,8 +41,8 @@ else:
     PROJ_LABEL = "Proj Yds"
 st.divider()
 
-tab_board, tab_player, tab_scorecard, tab_top = st.tabs(
-    ["📋 Board", "🔍 Player", "📊 Scorecard", "🎯 Top Plays"])
+tab_board, tab_player, tab_scorecard, tab_top, tab_guide = st.tabs(
+    ["📋 Board", "🔍 Player", "📊 Scorecard", "🎯 Top Plays", "📖 Guide"])
 
 TIER_COLORS = {"Pass": "#8a7f70", "Lean": "#e6c14d",
                "Strong": "#4caf72", "Max": "#f0964a"}
@@ -437,3 +437,68 @@ with tab_top:
             st.caption("Ranked by tier then confidence. Confidence is normalized per-market, "
                        "so tiers are comparable across markets. 'Line/Odds' = your entered value "
                        "(yards/catches for yardage markets, American odds for TD).")
+                       # ============ GUIDE ============
+with tab_guide:
+    st.subheader("📖 OpalScales Guide")
+
+    st.markdown("""
+### 🔮 What OpalScales Is
+
+OpalScales projects NFL player prop outcomes using statistical models built on years of data,
+then compares those projections to sportsbook lines to flag where there might be an edge.
+It covers five markets: receiving yards, receptions, rushing yards, QB passing yards, and anytime TD.
+
+It's a tool to inform your decisions.
+
+---
+
+### How to use it
+
+1. **Pick a market** (top dropdown).
+2. **Pick the season and week.**
+3. On the **Board**, type the sportsbook's number in the "Your Line" column:
+   - Yardage & receptions markets → type the **over/under line** (e.g. 74.5).
+   - Anytime TD → type the **American odds** (e.g. 150 for +150, -200 for -200).
+4. The app grades the **edge**, or how far the projection is from the line, which side it favors, and a confidence tier.
+5. **Save picks to the Log**, tick which ones you actually bet, and the **Scorecard** tracks results over time.
+   The **Player** tab shows any player's history; **Top Plays** ranks your best edges across all markets.
+
+---
+
+### How to read the numbers
+
+- **Proj**: the model's projection. Units differ by market: *yards* (receiving, rushing, QB), *catches* (receptions), or *probability %* (TD).
+- **Gap**: how far the projection is from the line (the raw edge, in that market's units).
+- **Confidence (0–100)**: a *relative* score for weighing plays against each other. **It is NOT a win probability.** High = "big edge relative to this market's history," not "wins X% of the time."
+- **Tier**: plain-English verdict: **Pass** (skip) · **Lean** (mild) · **Strong** (solid) · **Max** (biggest disagreement with the line). Strong/Max are where the model's edge tested best.
+
+---
+
+### The season arc — trust it more as the year goes on
+
+**The model gets stronger as the season progresses.**
+
+- **Weeks 1–3:** weakest. It leans on last season's data since there isn't much current-season form yet. Projections are shakier and wrapped in wide uncertainty. Bet light, if at all.
+- **Rookies** won't populate in Week 1 (no NFL history); they appear Week 2+ but stay volatile until they've banked a few games.
+- **Midseason onward:** strongest, working off rich current-season form. Trust it most here.
+
+Think of it as a model that *earns* your trust as real data accumulates.
+
+---
+
+### Honest limitations (read this part)
+
+- Projections are **guides, not guarantees.** Football is noisy, and a great matchup can still bust. No model captures that.
+- The model is near the **ceiling of what pre-game data can predict.** The rest is genuine randomness. Anyone claiming certainty is selling something.
+- It doesn't see **injuries, benchings, weather surprises, or coverage matchups** in real time. That context is *your* job. Use your football brain on top of the model!!!
+- Betting markets are efficient. The edge, if it exists, is small and lives in the details.
+
+---
+
+### The OpalScales approach
+
+Small edges. Obscure players over stars (the market is sharpest on stars). Discipline over hype.
+Track everything honestly, and let the results — not a good story — tell you what's working.
+
+*Bet responsibly. This is a tool for informed decisions, not financial advice.*
+""")
