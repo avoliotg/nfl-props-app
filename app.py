@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import betlog
+import db
 
 st.set_page_config(page_title="NFL Props", layout="wide")
 
