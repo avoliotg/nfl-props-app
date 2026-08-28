@@ -2,8 +2,52 @@ import streamlit as st
 import pandas as pd
 import betlog
 import db
+ADMIN_EMAIL = "opalscales30@gmail.com"
 
 st.set_page_config(page_title="NFL Props", layout="wide")
+# ---------- Login gate ----------
+if "user" not in st.session_state:
+    st.session_state.user = None
+
+
+def _show_login():
+    st.title("🔮 OpalScales")
+    st.caption("Log in or sign up to continue.")
+    tab_login, tab_signup = st.tabs(["Log In", "Sign Up"])
+
+    with tab_login:
+        email = st.text_input("Email", key="login_email")
+        pw = st.text_input("Password", type="password", key="login_pw")
+        if st.button("Log In", type="primary", key="login_btn"):
+            user, msg = db.sign_in(email, pw)
+            if user:
+                st.session_state.user = user
+                st.rerun()
+            else:
+                st.error(msg)
+
+    with tab_signup:
+        email2 = st.text_input("Email", key="signup_email")
+        pw2 = st.text_input("Password (8+ characters)", type="password", key="signup_pw")
+        if st.button("Sign Up", type="primary", key="signup_btn"):
+            if len(pw2) < 8:
+                st.warning("Password must be at least 8 characters.")
+            else:
+                ok, msg = db.sign_up(email2, pw2)
+                if ok:
+                    st.success(msg)
+                else:
+                    st.error(msg)
+
+if st.session_state.user is None:
+    _show_login()
+    st.stop()
+IS_ADMIN = st.session_state.user["email"] == ADMIN_EMAIL
+with st.sidebar:
+    st.caption(f"Logged in as {st.session_state.user['email']}")
+    if st.button("Log out"):
+        st.session_state.user = None
+        st.rerun()
 
 MARKETS = {
     "Receiving Yards": "receiving",
@@ -42,8 +86,11 @@ else:
     PROJ_LABEL = "Proj Yds"
 st.divider()
 
-tab_board, tab_player, tab_scorecard, tab_top, tab_guide, tab_import = st.tabs(
-    ["📋 Board", "🔍 Player", "📊 Scorecard", "🎯 Top Plays", "📖 Guide", "📥 Import"])
+tab_labels = ["📋 Board", "🔍 Player", "📊 Scorecard", "🎯 Top Plays", "📖 Guide"]
+if IS_ADMIN:
+    tab_labels.append("📥 Import")
+_tabs = st.tabs(tab_labels)
+tab_board, tab_player, tab_scorecard, tab_top, tab_guide = _tabs[0], _tabs[1], _tabs[2], _tabs[3], _tabs[4]
 
 TIER_COLORS = {"Pass": "#8a7f70", "Lean": "#e6c14d",
                "Strong": "#4caf72", "Max": "#f0964a"}
@@ -180,16 +227,18 @@ with tab_board:
 
         # sanity guard (yardage only; odds have their own valid ranges)
         if not IS_PROB and len(graded) > 0:
-            bad = graded[(graded["your_input"] < 0) | (graded["your_input"] > 150)]
+            # sanity ceiling scales with market — QB passing runs much higher than receiving/rushing
+            max_line = 500 if market_key == "qb_passing" else 150
+            bad = graded[(graded["your_input"] < 0) | (graded["your_input"] > max_line)]
             if len(bad) > 0:
                 names = ", ".join(f"{r['player_display_name']} ({r['your_input']:.0f})"
                                   for _, r in bad.iterrows())
                 override = st.checkbox("☑ I've checked — grade the flagged lines anyway",
                                        key="sanity_override")
                 if not override:
-                    st.warning(f"⚠️ These lines look off (outside 0-150): {names}. "
+                    st.warning(f"⚠️ These lines look off (outside 0-{max_line}): {names}. "
                                f"Tick the box to grade anyway.")
-                    graded = graded[(graded["your_input"] >= 0) & (graded["your_input"] <= 150)]
+                    graded = graded[(graded["your_input"] >= 0) & (graded["your_input"] <= max_line)]
 
         if len(graded) > 0:
             if IS_PROB:
@@ -249,7 +298,7 @@ with tab_board:
                 entries = entries.rename(columns={"player_display_name": "player",
                                                   "your_input": "line"})
                 entries = entries[betlog.COLUMNS]
-                betlog.append_entries(entries)
+                betlog.append_entries(entries, st.session_state.user["id"])
                 st.success(f"Saved {len(entries)} pick(s) to the log.")
 
 # ============ PLAYER ============
@@ -316,7 +365,7 @@ with tab_player:
                 unit = "prob pts" if IS_PROB else ""
                 st.caption(f"Avg miss for {player}: **{mae:.1f} {unit}** over {len(graded_h)} games.")
 
-        log = betlog.load_log()
+        log = betlog.load_log(st.session_state.user["id"])
         plog = log[(log["market"] == market_key) & (log["player"] == player)] if len(log) else log
         if len(plog) > 0:
             st.markdown(f"#### Your logged picks on {player}")
@@ -328,7 +377,7 @@ with tab_player:
 with tab_scorecard:
     st.subheader(f"{market_name} — Season Scorecard")
 
-    log = betlog.load_log()
+    log = betlog.load_log(st.session_state.user["id"])
     log = log[log["market"] == market_key] if len(log) else log
 
     if len(log) == 0:
@@ -346,7 +395,7 @@ with tab_scorecard:
         if st.button("🎯 Grade picks (pull actual results)"):
             betlog.grade_log(
                 lambda s, w, p: module.actual_result(int(s), int(w), p),
-                is_prob=IS_PROB)
+                is_prob=IS_PROB, user_id=st.session_state.user["id"])
             st.success("Graded. Refreshing...")
             st.rerun()
 
@@ -380,7 +429,7 @@ with tab_top:
                "across all markets, ranked by tier and confidence. "
                "Enter + save picks in each market's Board first.")
 
-    log = betlog.load_log()
+    log = betlog.load_log(st.session_state.user["id"])
     if len(log) == 0:
         st.info("No saved picks yet. Enter lines/odds on each market's Board and Save to Log.")
     else:
@@ -513,49 +562,50 @@ Track everything honestly, and let the results tell you what's working.
 *Bet responsibly. This is a tool for informed decisions, not financial advice.*
 """)
     # ============ IMPORT ============
-with tab_import:
-    st.subheader("📥 Import Lines from CSV")
-    st.caption("Paste CSV from the extraction prompt. Columns: "
-               "player, market, line, over_odds, under_odds. "
-               "Imports are cumulative — re-importing a player updates their line.")
+if IS_ADMIN:
+    with _tabs[5]:
+        st.subheader("📥 Import Lines from CSV")
+        st.caption("Paste CSV from the extraction prompt. Columns: "
+                   "player, market, line, over_odds, under_odds. "
+                   "Imports are cumulative — re-importing a player updates their line.")
 
-    ic1, ic2 = st.columns(2)
-    with ic1:
-        imp_season = st.number_input("Season", min_value=2020, max_value=2030,
-                                     value=2025, step=1, key="imp_season")
-    with ic2:
-        imp_week = st.number_input("Week", min_value=1, max_value=25,
-                                   value=1, step=1, key="imp_week")
+        ic1, ic2 = st.columns(2)
+        with ic1:
+            imp_season = st.number_input("Season", min_value=2020, max_value=2030,
+                                         value=2025, step=1, key="imp_season")
+        with ic2:
+            imp_week = st.number_input("Week", min_value=1, max_value=25,
+                                       value=1, step=1, key="imp_week")
 
-    csv_text = st.text_area(
-        "Paste CSV here", height=200, key="imp_csv",
-        placeholder="player,market,line,over_odds,under_odds\n"
-                    "Ja'Marr Chase,receiving_yards,74.5,-115,-105\n"
-                    "...")
+        csv_text = st.text_area(
+            "Paste CSV here", height=200, key="imp_csv",
+            placeholder="player,market,line,over_odds,under_odds\n"
+                        "Ja'Marr Chase,receiving_yards,74.5,-115,-105\n"
+                        "...")
 
-    if st.button("📥 Import", type="primary", key="imp_btn"):
-        if not csv_text.strip():
-            st.warning("Paste some CSV first.")
-        else:
-            import io, csv as _csv
-            try:
-                reader = _csv.DictReader(io.StringIO(csv_text.strip()))
-                rows = [dict(r) for r in reader]
-            except Exception as e:
-                rows = None
-                st.error(f"Couldn't parse CSV: {e}")
-            if rows is not None:
-                if len(rows) == 0:
-                    st.warning("No data rows found (need a header row + at least one line).")
-                else:
-                    result = db.import_lines(rows, imp_season, imp_week)
-                    st.success(f"Imported {result['imported']} line(s) for "
-                               f"{imp_season} Week {imp_week}.")
-                    if result["by_market"]:
-                        breakdown = " · ".join(f"{k}: {v}" for k, v in result["by_market"].items())
-                        st.caption(f"By market — {breakdown}")
-                    if result["bad_market"]:
-                        st.warning("Unrecognized market(s) — these rows were skipped: "
-                                   + ", ".join(sorted(set(result['bad_market']))))
-                    st.cache_data.clear()
-                    st.rerun()
+        if st.button("📥 Import", type="primary", key="imp_btn"):
+            if not csv_text.strip():
+                st.warning("Paste some CSV first.")
+            else:
+                import io, csv as _csv
+                try:
+                    reader = _csv.DictReader(io.StringIO(csv_text.strip()))
+                    rows = [dict(r) for r in reader]
+                except Exception as e:
+                    rows = None
+                    st.error(f"Couldn't parse CSV: {e}")
+                if rows is not None:
+                    if len(rows) == 0:
+                        st.warning("No data rows found (need a header row + at least one line).")
+                    else:
+                        result = db.import_lines(rows, imp_season, imp_week)
+                        st.success(f"Imported {result['imported']} line(s) for "
+                                   f"{imp_season} Week {imp_week}.")
+                        if result["by_market"]:
+                            breakdown = " · ".join(f"{k}: {v}" for k, v in result["by_market"].items())
+                            st.caption(f"By market — {breakdown}")
+                        if result["bad_market"]:
+                            st.warning("Unrecognized market(s) — these rows were skipped: "
+                                       + ", ".join(sorted(set(result['bad_market']))))
+                        st.cache_data.clear()
+                        st.rerun()

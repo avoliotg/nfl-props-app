@@ -21,10 +21,10 @@ def _client():
     return db.get_client()
 
 
-def load_log():
+def load_log(user_id="admin"):
     """Return the full log as a DataFrame (empty if none yet)."""
     try:
-        resp = _client().table(TABLE).select("*").execute()
+        resp = _client().table(TABLE).select("*").eq("user_id", user_id).execute()
         rows = resp.data
     except Exception:
         rows = []
@@ -41,12 +41,13 @@ def load_log():
     return df[COLUMNS]
 
 
-def append_entries(entries: pd.DataFrame):
+def append_entries(entries: pd.DataFrame, user_id="admin"):
     """Insert/replace graded picks in the DB, de-duplicating on
     market+season+week+player (latest entry wins)."""
     client = _client()
     for _, row in entries.iterrows():
         record = {
+            "user_id": user_id,
             "logged_at": row.get("logged_at"),
             "market": row.get("market"),
             "season": int(row["season"]) if pd.notna(row.get("season")) else None,
@@ -65,20 +66,21 @@ def append_entries(entries: pd.DataFrame):
         # delete any existing row for this unique pick, then insert (latest wins)
         (client.table(TABLE)
                .delete()
+               .eq("user_id", user_id)
                .eq("market", record["market"])
                .eq("season", record["season"])
                .eq("week", record["week"])
                .eq("player", record["player"])
                .execute())
         client.table(TABLE).insert(record).execute()
-    return load_log()
+    return load_log(user_id)
 
 
-def grade_log(actuals_lookup, is_prob=False):
+def grade_log(actuals_lookup, is_prob=False, user_id="admin"):
     """Fill in result + outcome for logged picks that don't have a result yet.
     actuals_lookup(season, week, player) -> actual result, or None."""
     client = _client()
-    log = load_log()
+    log = load_log(user_id)
     if len(log) == 0:
         return log
 
@@ -102,12 +104,13 @@ def grade_log(actuals_lookup, is_prob=False):
 
         (client.table(TABLE)
                .update({"result": float(actual), "outcome": outcome})
+               .eq("user_id", user_id)
                .eq("market", row["market"])
                .eq("season", int(row["season"]))
                .eq("week", int(row["week"]))
                .eq("player", row["player"])
                .execute())
-    return load_log()
+    return load_log(user_id)
 
 
 def now_stamp():

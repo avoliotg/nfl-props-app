@@ -111,3 +111,27 @@ def _to_num(v):
         return float(v)
     except Exception:
         return None
+    # ---------- Authentication ----------
+
+def sign_up(email, password):
+    """Create a new user account. Returns (success, message)."""
+    client = get_client()
+    try:
+        res = client.auth.sign_up({"email": email, "password": password})
+        if res.user:
+            return True, "Account created! You can now log in."
+        return False, "Sign up failed — please try again."
+    except Exception as e:
+        return False, f"Sign up error: {e}"
+
+
+def sign_in(email, password):
+    """Log in an existing user. Returns (user_dict_or_None, message)."""
+    client = get_client()
+    try:
+        res = client.auth.sign_in_with_password({"email": email, "password": password})
+        if res.user:
+            return {"id": res.user.id, "email": res.user.email}, "Logged in!"
+        return None, "Login failed — check your email and password."
+    except Exception as e:
+        return None, f"Login error: {e}"
