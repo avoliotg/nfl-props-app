@@ -53,7 +53,7 @@ def available_weeks(season):
     return sorted(s[s["season"] == season]["week"].dropna().unique().tolist())
 
 
-def project_week(season, week, min_touches=3):
+def project_week(season, week, min_touches=1.5):
     """Returns each player's model TD probability (as a %)."""
     model, feats = load_model()
     s = build_dataset()
@@ -111,7 +111,7 @@ def all_players(season):
     return sorted(p["player_display_name"].dropna().unique().tolist())
 
 
-def player_history(season, player_name, min_touches=3):
+def player_history(season, player_name, min_touches=0.5):
     model, feats = load_model()
     s = build_dataset()
     p = s[(s["season"] == season) &

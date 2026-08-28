@@ -68,7 +68,7 @@ def available_weeks(season):
     return sorted(qb[qb["season"] == season]["week"].dropna().unique().tolist())
 
 
-def project_week(season, week, min_attempts=10):
+def project_week(season, week, min_attempts=1.5):
     model, feats = load_model()
     qb = build_dataset()
     wk = qb[(qb["season"] == season) & (qb["week"] == week)].copy()
@@ -114,7 +114,7 @@ def all_players(season):
     return sorted(p["player_display_name"].dropna().unique().tolist())
 
 
-def player_history(season, player_name, min_attempts=10):
+def player_history(season, player_name, min_attempts=0.5):
     model, feats = load_model()
     qb = build_dataset()
     p = qb[(qb["season"] == season) &

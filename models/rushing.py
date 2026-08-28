@@ -55,7 +55,7 @@ def available_weeks(season):
     return sorted(rush[rush["season"] == season]["week"].dropna().unique().tolist())
 
 
-def project_week(season, week, min_carries=5):
+def project_week(season, week, min_carries=1.5):
     model, feats = load_model()
     rush = build_dataset()
     wk = rush[(rush["season"] == season) & (rush["week"] == week)].copy()
@@ -101,7 +101,7 @@ def all_players(season):
     return sorted(p["player_display_name"].dropna().unique().tolist())
 
 
-def player_history(season, player_name, min_carries=5):
+def player_history(season, player_name, min_carries=0.5):
     model, feats = load_model()
     rush = build_dataset()
     p = rush[(rush["season"] == season) &

@@ -27,11 +27,25 @@ def build_dataset():
                               .transform(lambda s: s.shift(1).rolling(6, min_periods=3).mean()))
 
     snaps = data_utils.load_snap_counts(SEASONS)
-    snaps_s = snaps[["season", "week", "team", "player", "offense_pct"]].rename(
-        columns={"player": "player_display_name"})
-    rec = rec.merge(snaps_s, on=["season", "week", "team", "player_display_name"], how="left")
+    snaps_s = snaps[["season", "week", "team", "player", "offense_pct"]].copy()
+
+    # normalize names for joining (stats and snap tables format names differently,
+    # e.g. "DK Metcalf" vs "D.K. Metcalf") — strip periods, extra spaces, lowercase
+    def _norm_name(s):
+        return (s.astype(str)
+                 .str.replace(".", "", regex=False)
+                 .str.replace(r"\s+", " ", regex=True)
+                 .str.strip()
+                 .str.lower())
+
+    rec["_join_name"] = _norm_name(rec["player_display_name"])
+    snaps_s["_join_name"] = _norm_name(snaps_s["player"])
+    snaps_s = snaps_s[["season", "week", "team", "_join_name", "offense_pct"]]
+
+    rec = rec.merge(snaps_s, on=["season", "week", "team", "_join_name"], how="left")
+    rec = rec.drop(columns=["_join_name"])
     rec["snap_roll"] = (rec.groupby("player_id")["offense_pct"]
-                        .transform(lambda s: s.shift(1).rolling(6, min_periods=3).mean()))
+                        .transform(lambda s: s.shift(1).rolling(6, min_periods=2).mean()))
 
     games = data_utils.load_schedules(SEASONS)
     home = games[["season", "week", "home_team", "spread_line", "total_line"]].rename(
@@ -64,7 +78,7 @@ def available_weeks(season):
     return sorted(rec[rec["season"] == season]["week"].dropna().unique().tolist())
 
 
-def project_week(season, week, min_targets=3):
+def project_week(season, week, min_targets=1.5):
     model, feats = load_model()
     rec = build_dataset()
     wk = rec[(rec["season"] == season) & (rec["week"] == week)].copy()
@@ -110,7 +124,7 @@ def all_players(season):
     return sorted(p["player_display_name"].dropna().unique().tolist())
 
 
-def player_history(season, player_name, min_targets=3):
+def player_history(season, player_name, min_targets=0.5):
     model, feats = load_model()
     rec = build_dataset()
     p = rec[(rec["season"] == season) &
