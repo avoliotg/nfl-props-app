@@ -172,7 +172,7 @@ with tab_board:
         display_cols = ["player_display_name", "team", "opponent_team", "position",
                         "projection"] + vol_cols + ["your_input"]
         edited = st.data_editor(
-            board[display_cols], use_container_width=False, width=1000, hide_index=True,
+            board[display_cols], use_container_width=True, hide_index=True,
             disabled=[c for c in display_cols if c != "your_input"],
             column_config=colcfg, key="board_editor")
 
@@ -229,7 +229,7 @@ with tab_board:
                            "gap", "confidence", "side", "tier"]].copy()
             grid["bet"] = False
             logged_view = st.data_editor(
-                grid, use_container_width=False, width=1000, hide_index=True,
+                grid, use_container_width=True, hide_index=True,
                 disabled=["player_display_name", "projection", "your_input",
                           "gap", "confidence", "side", "tier"],
                 column_config={
@@ -354,7 +354,7 @@ with tab_scorecard:
         by_tier = (log["tier"].value_counts()
                    .reindex(["Max", "Strong", "Lean", "Pass"]).fillna(0).astype(int))
         st.dataframe(by_tier.rename("Count").reset_index().rename(columns={"index": "Tier"}),
-                     use_container_width=False, hide_index=True)
+                     use_container_width=True, hide_index=True)
 
         st.markdown("#### All logged picks")
         st.dataframe(log[["season", "week", "player", "projection", "line",
