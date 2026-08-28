@@ -104,8 +104,8 @@ def render_html_table(df, cols, aligns):
         f'text-transform:uppercase;letter-spacing:0.05em;cursor:help;">{h}</th>'
         for h, a in zip(cols, aligns))
 
-    return f"""<div style="border-radius:10px;overflow:hidden;border:1px solid #3a2f1e;
-        box-shadow:0 4px 16px rgba(0,0,0,0.4);margin-top:8px;max-width:1000px;">
+    return f"""<div style="border-radius:10px;overflow-x:auto;-webkit-overflow-scrolling:touch;
+        border:1px solid #3a2f1e;box-shadow:0 4px 16px rgba(0,0,0,0.4);margin-top:8px;max-width:1000px;">
         <table style="width:100%;border-collapse:collapse;font-size:0.9rem;
         font-family:'Source Sans Pro',sans-serif;">
         <thead><tr>{header}</tr></thead><tbody>{rows}</tbody></table></div>"""
@@ -303,7 +303,7 @@ with tab_player:
                     f'<th style="padding:10px 12px;text-align:left;background:#e0873a;'
                     f'color:#161310;font-weight:800;font-size:0.78rem;text-transform:uppercase;'
                     f'letter-spacing:0.04em;">{h}</th>' for h in heads)
-                return f"""<div style="border-radius:10px;overflow:hidden;border:1px solid #3a2f1e;
+                return f"""<div style="border-radius:10px;overflow-x:auto;-webkit-overflow-scrolling:touch;border:1px solid #3a2f1e;
                     box-shadow:0 4px 16px rgba(0,0,0,0.4);margin-top:8px;max-width:900px;">
                     <table style="width:100%;border-collapse:collapse;font-size:0.88rem;
                     font-family:'Source Sans Pro',sans-serif;">
@@ -436,7 +436,7 @@ with tab_top:
                     f'<th style="padding:11px 12px;text-align:{a};background:#e0873a;'
                     f'color:#161310;font-weight:800;font-size:0.8rem;text-transform:uppercase;'
                     f'letter-spacing:0.04em;">{h}</th>' for h, a in zip(heads, aligns))
-                return f"""<div style="border-radius:10px;overflow:hidden;border:1px solid #3a2f1e;
+                return f"""<div style="border-radius:10px;overflow-x:auto;-webkit-overflow-scrolling:touch;border:1px solid #3a2f1e;
                     box-shadow:0 4px 16px rgba(0,0,0,0.4);margin-top:8px;">
                     <table style="width:100%;border-collapse:collapse;font-size:0.9rem;
                     font-family:'Source Sans Pro',sans-serif;">
