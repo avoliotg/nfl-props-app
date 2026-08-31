@@ -178,12 +178,12 @@ with tab_board:
         vol_cols = [c for c in board.columns if c.endswith("_roll")]
 
         if IS_PROB:
-            st.info("✏️ **Type the sportsbook's American odds (e.g. +150, -200)** "
-                    "in the 'Your Odds' column to see the edge.")
-            input_label = "Your Odds ✏️"
+            st.info("✏️ Enter the sportsbook's American odds in the **Your Odds** column "
+                    "(auto-filled from imported lines when available). Edge appears below.")
         else:
-            st.info("✏️ **Type a sportsbook line in the 'Your Line' column** to grade an edge.")
-            input_label = "Your Line ✏️"
+            st.info("✏️ Enter the **Line** and **Over/Under odds** "
+                    "(auto-filled from imported lines when available). "
+                    "Edge is computed against the real vig; blank odds fall back to −110.")
 
         board = board.copy()
         # pre-fill inputs from the imported lines pool (if any)
@@ -233,7 +233,7 @@ with tab_board:
         edited = st.data_editor(
             board[display_cols], use_container_width=True, hide_index=True,
             disabled=[c for c in display_cols if c not in input_cols],
-            column_config=colcfg, key="board_editor")
+            column_config=colcfg, key=f"board_editor_{market_key}")
 
         # rows with the key input present (line for yardage, odds for TD)
         key_input = "line" if not IS_PROB else "over_odds"
@@ -331,7 +331,7 @@ with tab_board:
                     "player_display_name": st.column_config.TextColumn("Player", width="medium"),
                     "bet": st.column_config.CheckboxColumn("Bet?", width="small",
                         help="Check if you actually placed this bet."),
-                }, key="graded_editor")
+                }, key=f"graded_editor_{market_key}")
 
             if st.button("💾 Save to Log", type="primary"):
                 entries = logged_view.copy()
