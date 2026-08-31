@@ -49,8 +49,12 @@ def available_seasons():
 
 
 def available_weeks(season):
-    s = build_dataset()
-    return sorted(s[s["season"] == season]["week"].dropna().unique().tolist())
+    rec = build_dataset()
+    played = sorted(rec[rec["season"] == season]["week"].dropna().unique().tolist())
+    if played:
+        return played
+    # no played games yet (pre-season) → only Week 1 is sensibly projectable
+    return [1]
 
 
 def project_week(season, week, min_touches=1.5):
