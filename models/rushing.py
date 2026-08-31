@@ -60,6 +60,11 @@ def project_week(season, week, min_carries=1.5):
     rush = build_dataset()
     wk = rush[(rush["season"] == season) & (rush["week"] == week)].copy()
     wk = wk[wk["carries_roll"] >= min_carries].dropna(subset=feats)
+
+    if len(wk) == 0:
+        wk = build_upcoming_week(season, week)
+        wk = wk[wk["carries_roll"] >= min_carries].dropna(subset=feats)
+
     if len(wk) == 0:
         return pd.DataFrame()
     wk["projection"] = model.predict(wk[feats]).round(1)
@@ -68,6 +73,51 @@ def project_week(season, week, min_carries=1.5):
             "projection", "carries_roll"]
     cols = [c for c in cols if c in wk.columns]
     return wk[cols].sort_values("projection", ascending=False).reset_index(drop=True)
+
+def build_upcoming_week(season, week):
+    """Manufacture player-week rows for a game not yet played (e.g. Week 1),
+    bridging carries from the prior season. Fallback when build_dataset()
+    has no rows for the requested week."""
+    import nflreadpy as nfl
+
+    ros = nfl.load_rosters([season])
+    ros = ros.to_pandas() if hasattr(ros, "to_pandas") else ros
+    ros = ros[ros["position"].isin(["RB", "QB", "WR"])]
+    ros = ros[["gsis_id", "full_name", "team", "position"]].rename(
+        columns={"gsis_id": "player_id"})
+    ros = ros.dropna(subset=["player_id"]).drop_duplicates(subset=["player_id"])
+
+    rush = build_dataset()
+    prior = rush[rush["season"] == season - 1].sort_values(["player_id", "week"])
+
+    def _bridge(g):
+        last6 = g.tail(6)
+        return pd.Series({
+            "carries_roll": last6["carries"].mean(),
+            "player_display_name": g.iloc[-1]["player_display_name"],
+        })
+    bridged = (prior.groupby("player_id", group_keys=False)
+               .apply(_bridge, include_groups=False).reset_index())
+
+    df = ros.merge(bridged, on="player_id", how="inner")
+
+    sched = nfl.load_schedules([season])
+    sched = sched.to_pandas() if hasattr(sched, "to_pandas") else sched
+    wk = sched[sched["week"] == week]
+    home = wk[["home_team", "away_team", "spread_line", "total_line"]].rename(
+        columns={"home_team": "team", "away_team": "opponent_team"})
+    home["team_spread"] = home["spread_line"]
+    away = wk[["away_team", "home_team", "spread_line", "total_line"]].rename(
+        columns={"away_team": "team", "home_team": "opponent_team"})
+    away["team_spread"] = -away["spread_line"]
+    ctx = pd.concat([home, away], ignore_index=True)[
+        ["team", "opponent_team", "team_spread", "total_line"]]
+    df = df.merge(ctx, on="team", how="inner")
+
+    df["season"] = season
+    df["week"] = week
+    df = df.dropna(subset=LEAN_FEATS)
+    return df.reset_index(drop=True)
 
 
 def tier_for_gap(gap):

@@ -78,6 +78,11 @@ def project_week(season, week, min_attempts=1.5):
     qb = build_dataset()
     wk = qb[(qb["season"] == season) & (qb["week"] == week)].copy()
     wk = wk[wk["attempts_roll"] >= min_attempts].dropna(subset=feats)
+
+    if len(wk) == 0:
+        wk = build_upcoming_week(season, week)
+        wk = wk[wk["attempts_roll"] >= min_attempts].dropna(subset=feats)
+
     if len(wk) == 0:
         return pd.DataFrame()
     wk["projection"] = model.predict(wk[feats]).round(1)
@@ -86,6 +91,63 @@ def project_week(season, week, min_attempts=1.5):
             "projection", "attempts_roll"]
     cols = [c for c in cols if c in wk.columns]
     return wk[cols].sort_values("projection", ascending=False).reset_index(drop=True)
+
+def build_upcoming_week(season, week):
+    """Manufacture QB player-week rows for a game not yet played (e.g. Week 1),
+    bridging attempts and opponent pass-defense from the prior season.
+    Fallback when build_dataset() has no rows for the requested week."""
+    import nflreadpy as nfl
+
+    ros = nfl.load_rosters([season])
+    ros = ros.to_pandas() if hasattr(ros, "to_pandas") else ros
+    ros = ros[ros["position"] == "QB"]
+    ros = ros[["gsis_id", "full_name", "team", "position"]].rename(
+        columns={"gsis_id": "player_id"})
+    ros = ros.dropna(subset=["player_id"]).drop_duplicates(subset=["player_id"])
+
+    qb = build_dataset()
+    prior = qb[qb["season"] == season - 1].sort_values(["player_id", "week"])
+
+    def _bridge(g):
+        last6 = g.tail(6)
+        return pd.Series({
+            "attempts_roll": last6["attempts"].mean(),
+            "player_display_name": g.iloc[-1]["player_display_name"],
+        })
+    bridged = (prior.groupby("player_id", group_keys=False)
+               .apply(_bridge, include_groups=False).reset_index())
+
+    df = ros.merge(bridged, on="player_id", how="inner")
+
+    # schedule context incl. roof/wind for wind_eff
+    sched = nfl.load_schedules([season])
+    sched = sched.to_pandas() if hasattr(sched, "to_pandas") else sched
+    wk = sched[sched["week"] == week]
+    home = wk[["home_team", "away_team", "spread_line", "total_line", "roof", "wind"]].rename(
+        columns={"home_team": "team", "away_team": "opponent_team"})
+    home["team_spread"] = home["spread_line"]
+    away = wk[["away_team", "home_team", "spread_line", "total_line", "roof", "wind"]].rename(
+        columns={"away_team": "team", "home_team": "opponent_team"})
+    away["team_spread"] = -away["spread_line"]
+    ctx = pd.concat([home, away], ignore_index=True)[
+        ["team", "opponent_team", "team_spread", "total_line", "roof", "wind"]]
+    df = df.merge(ctx, on="team", how="inner")
+
+    df["is_outdoor"] = df["roof"].isin(["outdoors", "open"]).astype(int)
+    df["wind_eff"] = np.where(df["is_outdoor"] == 1, df["wind"].fillna(7), 0)
+
+    # opponent pass defense: bridge each defense's end-of-prior-season rolling value
+    prior_def = qb[qb["season"] == season - 1].copy()
+    def_last = (prior_def.sort_values(["opponent_team", "week"])
+                .groupby("opponent_team")["def_pass_roll"].last().reset_index()
+                .rename(columns={"opponent_team": "opp_ref", "def_pass_roll": "def_pass_roll_bridged"}))
+    df = df.merge(def_last, left_on="opponent_team", right_on="opp_ref", how="left")
+    df["def_pass_roll"] = df["def_pass_roll_bridged"].fillna(df["def_pass_roll_bridged"].mean())
+
+    df["season"] = season
+    df["week"] = week
+    df = df.dropna(subset=LEAN_FEATS)
+    return df.reset_index(drop=True)
 
 
 def tier_for_gap(gap):
