@@ -51,14 +51,17 @@ def _normalize_market(raw):
 
 
 def import_lines(rows, season, week, sport="NFL"):
-    """Upsert a batch of imported lines into the 'lines' table.
+    """Append a batch of imported lines as a NEW timestamped snapshot into 'lines'.
+    Each import adds rows (never overwrites) so line movement is preserved for CLV.
     rows: list of dicts with keys player, market, line, over_odds, under_odds.
     Returns a summary dict: imported count, per-market counts, and any problems.
     """
+    from datetime import datetime, timezone
     client = get_client()
+    captured_at = datetime.now(timezone.utc).isoformat()
     imported = 0
     by_market = {}
-    bad_market = []   # rows whose market wasn't recognized
+    bad_market = []
     for r in rows:
         mkt = _normalize_market(r.get("market"))
         if mkt is None:
@@ -73,13 +76,11 @@ def import_lines(rows, season, week, sport="NFL"):
             "line": _to_num(r.get("line")),
             "over_odds": _to_num(r.get("over_odds")),
             "under_odds": _to_num(r.get("under_odds")),
+            "captured_at": captured_at,
         }
         if not record["player"]:
             continue
-        # upsert on the unique key (sport+season+week+market+player)
-        client.table("lines").upsert(
-            record, on_conflict="sport,season,week,market,player"
-        ).execute()
+        client.table("lines").insert(record).execute()   # append, don't overwrite
         imported += 1
         by_market[mkt] = by_market.get(mkt, 0) + 1
     return {"imported": imported, "by_market": by_market,
@@ -88,12 +89,15 @@ def import_lines(rows, season, week, sport="NFL"):
 
 def get_lines(season, week, market, sport="NFL"):
     """Fetch the pool of imported lines for a given market/week as a dict
-    {player_name: {'line':..., 'over_odds':..., 'under_odds':...}}."""
+    {player_name: {'line':..., 'over_odds':..., 'under_odds':...}}.
+    Returns the MOST RECENT snapshot per player (movement history is preserved
+    in the table; the Board shows the latest)."""
     client = get_client()
     try:
         resp = (client.table("lines").select("*")
                 .eq("sport", sport).eq("season", int(season))
-                .eq("week", int(week)).eq("market", market).execute())
+                .eq("week", int(week)).eq("market", market)
+                .order("captured_at", desc=False).execute())
         out = {}
         for r in resp.data:
             out[r["player"]] = {"line": r.get("line"),
