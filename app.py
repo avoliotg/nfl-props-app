@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import betlog
 import db
+import mc
 ADMIN_EMAIL = "opalscales30@gmail.com"
 
 st.set_page_config(page_title="NFL Props", layout="wide")
@@ -189,98 +190,147 @@ with tab_board:
             input_label = "Your Line ✏️"
 
         board = board.copy()
-        # pre-fill "Your Line" from the imported lines pool (if any)
+        # pre-fill inputs from the imported lines pool (if any)
         pool = db.get_lines(season, week, market_key)
-        def _prefill(player_name):
+
+        def _prefill_field(player_name, field):
             entry = pool.get(player_name)
-            if not entry:
-                return None
-            if IS_PROB:
-                return entry.get("over_odds")
-            return entry.get("line")
-        board["your_input"] = board["player_display_name"].apply(_prefill)
+            return entry.get(field) if entry else None
+
+        vol_labels = {"targets_roll": "Recent Tgts", "snap_roll": "Recent Snap%",
+                      "carries_roll": "Recent Car", "attempts_roll": "Recent Att",
+                      "touches_roll": "Recent Tch"}
 
         colcfg = {
             "player_display_name": st.column_config.TextColumn("Player", width="medium"),
             "team": st.column_config.TextColumn("Tm", width="small"),
             "opponent_team": st.column_config.TextColumn("Opp", width="small"),
             "position": st.column_config.TextColumn("Pos", width="small"),
-            "your_input": st.column_config.NumberColumn(input_label, format="%.1f", width="small"),
         }
         colcfg["projection"] = st.column_config.NumberColumn(PROJ_LABEL, format="%.1f", width="small")
-        # volume columns get simple labels
-        vol_labels = {"targets_roll": "Recent Tgts", "snap_roll": "Recent Snap%",
-                      "carries_roll": "Recent Car", "attempts_roll": "Recent Att",
-                      "touches_roll": "Recent Tch"}
         for vc in vol_cols:
             fmt = "%.0f%%" if vc == "snap_roll" else "%.1f"
             colcfg[vc] = st.column_config.NumberColumn(vol_labels.get(vc, vc), format=fmt, width="small")
 
-        display_cols = ["player_display_name", "team", "opponent_team", "position",
-                        "projection"] + vol_cols + ["your_input"]
+        if IS_PROB:
+            # TD: single odds input (over/yes price)
+            board["over_odds"] = board["player_display_name"].apply(
+                lambda p: _prefill_field(p, "over_odds"))
+            colcfg["over_odds"] = st.column_config.NumberColumn(
+                "Your Odds ✏️", format="%.0f", width="small")
+            input_cols = ["over_odds"]
+        else:
+            # yardage/receptions: line + over odds + under odds (all editable)
+            board["line"] = board["player_display_name"].apply(
+                lambda p: _prefill_field(p, "line"))
+            board["over_odds"] = board["player_display_name"].apply(
+                lambda p: _prefill_field(p, "over_odds"))
+            board["under_odds"] = board["player_display_name"].apply(
+                lambda p: _prefill_field(p, "under_odds"))
+            colcfg["line"] = st.column_config.NumberColumn("Line ✏️", format="%.1f", width="small")
+            colcfg["over_odds"] = st.column_config.NumberColumn("Over ✏️", format="%.0f", width="small")
+            colcfg["under_odds"] = st.column_config.NumberColumn("Under ✏️", format="%.0f", width="small")
+            input_cols = ["line", "over_odds", "under_odds"]
+
+        display_cols = (["player_display_name", "team", "opponent_team", "position",
+                         "projection"] + vol_cols + input_cols)
         edited = st.data_editor(
             board[display_cols], use_container_width=True, hide_index=True,
-            disabled=[c for c in display_cols if c != "your_input"],
+            disabled=[c for c in display_cols if c not in input_cols],
             column_config=colcfg, key="board_editor")
 
-        graded = edited[edited["your_input"].notna()].copy()
+        # rows with the key input present (line for yardage, odds for TD)
+        key_input = "line" if not IS_PROB else "over_odds"
+        graded = edited[edited[key_input].notna()].copy()
 
         # sanity guard (yardage only; odds have their own valid ranges)
         if not IS_PROB and len(graded) > 0:
-            # sanity ceiling scales with market — QB passing runs much higher than receiving/rushing
             max_line = 500 if market_key == "qb_passing" else 150
-            bad = graded[(graded["your_input"] < 0) | (graded["your_input"] > max_line)]
+            bad = graded[(graded["line"] < 0) | (graded["line"] > max_line)]
             if len(bad) > 0:
-                names = ", ".join(f"{r['player_display_name']} ({r['your_input']:.0f})"
+                names = ", ".join(f"{r['player_display_name']} ({r['line']:.0f})"
                                   for _, r in bad.iterrows())
                 override = st.checkbox("☑ I've checked — grade the flagged lines anyway",
                                        key="sanity_override")
                 if not override:
                     st.warning(f"⚠️ These lines look off (outside 0-{max_line}): {names}. "
                                f"Tick the box to grade anyway.")
-                    graded = graded[(graded["your_input"] >= 0) & (graded["your_input"] <= max_line)]
+                    graded = graded[(graded["line"] >= 0) & (graded["line"] <= max_line)]
 
         if len(graded) > 0:
+            # ---- MC edge layer ----
+            # TODO: games_played is hardcoded 0 (correct for Week 1). Generalize
+            # to real current-season volume-qualifying games before Week 2.
+            GAMES_PLAYED = 0
+
+            def _row_edge(r):
+                if IS_PROB:
+                    # TD: model already outputs a probability; edge = model% - implied%
+                    implied = module.american_to_prob(r["over_odds"])
+                    if implied is None:
+                        return pd.Series({"p_over": r["projection"], "edge": None,
+                                          "side": "", "tier": "", "approx": False})
+                    e = round(r["projection"] - implied, 1)
+                    return pd.Series({
+                        "p_over": r["projection"], "edge": e,
+                        "side": "OVER" if e > 0 else "—",
+                        "tier": mc.tier_for_edge(e), "approx": False})
+                else:
+                    res = mc.edge_calc(market_key, r["projection"], r["line"],
+                                       GAMES_PLAYED,
+                                       over_odds=r.get("over_odds"),
+                                       under_odds=r.get("under_odds"))
+                    if res is None:
+                        return pd.Series({"p_over": None, "edge": None,
+                                          "side": "", "tier": "", "approx": False})
+                    best = res["best_edge"]
+                    # both sides negative → it's a pass; side is moot
+                    side = res["best_side"] if best >= 0 else "—"
+                    return pd.Series({
+                        "p_over": res["p_over"], "edge": best,
+                        "side": side, "tier": mc.tier_for_edge(best),
+                        "approx": res["approx_odds"]})
+
+            mc_cols = graded.apply(_row_edge, axis=1)
+            graded = pd.concat([graded, mc_cols], axis=1)
+            graded = graded[graded["edge"].notna()].copy()
+            graded = graded.sort_values("edge", ascending=False).reset_index(drop=True)
+
             if IS_PROB:
-                graded["implied"] = graded["your_input"].apply(module.american_to_prob)
-                graded["gap"] = (graded["projection"] - graded["implied"]).round(1)
-                graded["side"] = graded["gap"].apply(lambda g: "OVER" if g > 0 else "UNDER")
-                graded["tier"] = graded["gap"].apply(module.tier_for_gap)
-                graded["confidence"] = graded["gap"].apply(module.confidence_for_gap)
-                graded = graded.sort_values("gap", key=lambda s: s.abs(),
-                                            ascending=False).reset_index(drop=True)
                 show = graded.rename(columns={
                     "player_display_name": "Player", "projection": "Model %",
-                    "your_input": "Odds", "implied": "Implied %", "gap": "Gap",
-                    "confidence": "Conf", "side": "Side", "tier": "Tier"})
-                cols = ["Player", "Model %", "Odds", "Implied %", "Gap", "Conf", "Side", "Tier"]
-                aligns = ["left", "left", "left", "left", "left", "left", "left", "left"]
+                    "over_odds": "Odds", "p_over": "P(over)%", "edge": "Edge",
+                    "side": "Side", "tier": "Tier"})
+                cols = ["Player", "Model %", "Odds", "Edge", "Side", "Tier"]
             else:
-                graded["gap"] = (graded["projection"] - graded["your_input"]).round(1)
-                graded["side"] = graded["gap"].apply(lambda g: "OVER" if g > 0 else "UNDER")
-                graded["tier"] = graded["gap"].apply(module.tier_for_gap)
-                graded["confidence"] = graded["gap"].apply(module.confidence_for_gap)
-                graded = graded.sort_values("gap", key=lambda s: s.abs(),
-                                            ascending=False).reset_index(drop=True)
                 show = graded.rename(columns={
                     "player_display_name": "Player", "projection": "Proj",
-                    "your_input": "Line", "gap": "Gap", "confidence": "Conf",
+                    "line": "Line", "p_over": "P(over)%", "edge": "Edge",
                     "side": "Side", "tier": "Tier"})
-                cols = ["Player", "Proj", "Line", "Gap", "Conf", "Side", "Tier"]
-                aligns = ["left", "left", "left", "left", "left", "left", "left"]
+                cols = ["Player", "Proj", "Line", "P(over)%", "Edge", "Side", "Tier"]
+            aligns = ["left"] * len(cols)
 
             st.markdown("### Your entered lines")
+            if graded["approx"].any():
+                st.caption("⚠️ Rows without imported odds use a −110 assumption "
+                           "(edge is approximate).")
             st.markdown(render_html_table(show, cols, aligns), unsafe_allow_html=True)
-            st.caption("Hover any column header (ⓘ) for what it means.")
+            st.caption("Hover any column header (ⓘ) for what it means. "
+                       "Edge = model probability minus the vig-adjusted breakeven, in points.")
 
             # ---- save to log ----
-            grid = graded[["player_display_name", "projection", "your_input",
-                           "gap", "confidence", "side", "tier"]].copy()
+            save_cols = ["player_display_name", "projection", "line",
+                         "over_odds", "under_odds", "edge", "p_over",
+                         "side", "tier"]
+            if IS_PROB:
+                # TD has no 'line'/'under_odds'; fill them so the schema is uniform
+                graded["line"] = None
+                graded["under_odds"] = None
+            grid = graded[save_cols].copy()
             grid["bet"] = False
             logged_view = st.data_editor(
                 grid, use_container_width=True, hide_index=True,
-                disabled=["player_display_name", "projection", "your_input",
-                          "gap", "confidence", "side", "tier"],
+                disabled=[c for c in save_cols],
                 column_config={
                     "player_display_name": st.column_config.TextColumn("Player", width="medium"),
                     "bet": st.column_config.CheckboxColumn("Bet?", width="small",
@@ -295,8 +345,7 @@ with tab_board:
                 entries["week"] = week
                 entries["result_yards"] = None
                 entries["outcome"] = None
-                entries = entries.rename(columns={"player_display_name": "player",
-                                                  "your_input": "line"})
+                entries = entries.rename(columns={"player_display_name": "player"})
                 entries = entries[betlog.COLUMNS]
                 betlog.append_entries(entries, st.session_state.user["id"])
                 st.success(f"Saved {len(entries)} pick(s) to the log.")
@@ -369,8 +418,8 @@ with tab_player:
         plog = log[(log["market"] == market_key) & (log["player"] == player)] if len(log) else log
         if len(plog) > 0:
             st.markdown(f"#### Your logged picks on {player}")
-            st.dataframe(plog[["season", "week", "line", "projection", "gap",
-                               "side", "tier", "bet", "result_yards", "outcome"]],
+            st.dataframe(plog[["season", "week", "line", "projection", "p_over",
+                               "edge", "side", "tier", "bet", "result_yards", "outcome"]],
                          use_container_width=True, hide_index=True)
 
 # ============ SCORECARD ============
@@ -407,7 +456,7 @@ with tab_scorecard:
 
         st.markdown("#### All logged picks")
         st.dataframe(log[["season", "week", "player", "projection", "line",
-                          "gap", "confidence", "side", "tier", "bet",
+                          "edge", "p_over", "side", "tier", "bet",
                           "result_yards", "outcome"]],
                      use_container_width=True, hide_index=True)
 
@@ -424,10 +473,10 @@ with tab_scorecard:
             h2.metric("Your actual bets", rate(bets) if len(bets) else "—")
             # ============ TOP PLAYS (merged across all markets) ============
 with tab_top:
-    st.subheader("🎯 Top Plays — all markets, ranked by confidence")
+    st.subheader("🎯 Top Plays — all markets, ranked by edge")
     st.caption("Pulls every pick you've saved to the log for the selected week, "
-               "across all markets, ranked by tier and confidence. "
-               "Enter + save picks in each market's Board first.")
+               "across all markets, ranked by edge (model probability minus the "
+               "vig-adjusted breakeven). Enter + save picks in each market's Board first.")
 
     log = betlog.load_log(st.session_state.user["id"])
     if len(log) == 0:
@@ -454,7 +503,7 @@ with tab_top:
         # nice market label
         key_to_name = {v: k for k, v in MARKETS.items()}
         view["market_label"] = view["market"].map(key_to_name).fillna(view["market"])
-        view = view.sort_values(["tier_rank", "confidence"], ascending=False).reset_index(drop=True)
+        view = view.sort_values(["tier_rank", "edge"], ascending=False).reset_index(drop=True)
 
         if len(view) == 0:
             st.warning(f"No {min_tier}+ plays saved for {tseason} Week {tweek}.")
@@ -464,23 +513,23 @@ with tab_top:
                 for i, r in df.iterrows():
                     bg = "#1e1912" if i % 2 == 0 else "#2a2318"
                     tier_c = TIER_COLORS.get(r["tier"], "#8a7f70")
-                    side_c = "#4caf72" if r["side"] == "OVER" else "#e0655a"
-                    conf = r["confidence"]
-                    cc = "#f0964a" if conf >= 85 else "#e6c14d" if conf >= 65 else "#c0b090" if conf >= 45 else "#8a7f70"
+                    side_c = "#4caf72" if r["side"] == "OVER" else "#e0655a" if r["side"] == "UNDER" else "#c0b090"
+                    edge_v = r["edge"] if pd.notna(r["edge"]) else 0
+                    edge_c = "#4caf72" if edge_v > 0 else "#e0655a" if edge_v < 0 else "#c0b090"
                     bet_mark = "✅" if r.get("bet") in (True, "True", "true") else ""
+                    line_disp = f"{r['line']:.1f}" if pd.notna(r["line"]) else "—"
                     rows += f"""<tr style="background:{bg};">
                       <td style="padding:9px 12px;font-weight:800;text-transform:uppercase;color:{tier_c};">{r['tier']}</td>
-                      <td style="padding:9px 12px;font-weight:800;color:{cc};">{conf:.0f}</td>
+                      <td style="padding:9px 12px;text-align:right;font-weight:800;color:{edge_c};">{edge_v:+.1f}</td>
                       <td style="padding:9px 12px;font-weight:600;">{r['player']}</td>
                       <td style="padding:9px 12px;color:#c0b090;">{r['market_label']}</td>
                       <td style="padding:9px 12px;text-align:right;">{r['projection']:.1f}</td>
-                      <td style="padding:9px 12px;text-align:right;">{r['line']:.1f}</td>
-                      <td style="padding:9px 12px;text-align:right;font-weight:700;color:{'#4caf72' if r['gap']>0 else '#e0655a'};">{r['gap']:+.1f}</td>
+                      <td style="padding:9px 12px;text-align:right;">{line_disp}</td>
                       <td style="padding:9px 12px;font-weight:700;color:{side_c};">{r['side']}</td>
                       <td style="padding:9px 12px;text-align:center;">{bet_mark}</td>
                     </tr>"""
-                heads = ["Tier", "Conf", "Player", "Market", "Proj", "Line/Odds", "Gap", "Side", "Bet"]
-                aligns = ["left", "left", "left", "left", "right", "right", "right", "left", "center"]
+                heads = ["Tier", "Edge", "Player", "Market", "Proj", "Line", "Side", "Bet"]
+                aligns = ["left", "right", "left", "left", "right", "right", "left", "center"]
                 header = "".join(
                     f'<th style="padding:11px 12px;text-align:{a};background:#e0873a;'
                     f'color:#161310;font-weight:800;font-size:0.8rem;text-transform:uppercase;'
@@ -493,9 +542,9 @@ with tab_top:
 
             st.markdown(f"**{len(view)} play(s)** for {tseason} Week {tweek}, {min_tier}+ tier:")
             st.markdown(render_top(view), unsafe_allow_html=True)
-            st.caption("Ranked by tier then confidence. Confidence is normalized per-market, "
-                       "so tiers are comparable across markets. 'Line/Odds' = your entered value "
-                       "(yards/catches for yardage markets, American odds for TD).")
+            st.caption("Ranked by tier then edge. Edge (model probability minus the "
+                       "vig-adjusted breakeven, in points) is the same unit across all "
+                       "markets, so plays are directly comparable.")
                        # ============ GUIDE ============
 with tab_guide:
     st.subheader("📖 OpalScales Guide")
