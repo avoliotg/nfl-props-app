@@ -4,6 +4,8 @@ import betlog
 import db
 import mc
 ADMIN_EMAIL = "opalscales30@gmail.com"
+OPAL_BANNER = ("📣 **Note from OpalScales:** Be wary of huge edges early in the season, "
+               "they're often the model's early season blind spots, not real value. See the Guide for details.")
 
 st.set_page_config(page_title="NFL Props", layout="wide")
 # ---------- Login gate ----------
@@ -69,7 +71,9 @@ MODULES = {
 
 st.markdown("<style>h1{color:#e0873a;}</style>", unsafe_allow_html=True)
 st.title("🔮 OpalScales")
-st.caption("An OpalScales modeling project · 🏈 NFL player prop projections")
+st.caption("An OpalScales modeling project · 🏈 Player prop projections")
+if OPAL_BANNER.strip():
+    st.info(OPAL_BANNER)
 
 market_name = st.selectbox("Market", list(MARKETS.keys()),
                            help="Which prop market to project.")
