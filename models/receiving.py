@@ -86,14 +86,75 @@ def project_week(season, week, min_targets=1.5):
     rec = build_dataset()
     wk = rec[(rec["season"] == season) & (rec["week"] == week)].copy()
     wk = wk[wk["targets_roll"] >= min_targets].dropna(subset=feats)
+
+    # fallback: no played-game data for this week yet (e.g. pre-kickoff Week 1)
+    if len(wk) == 0:
+        wk = build_upcoming_week(season, week)
+        wk = wk[wk["targets_roll"] >= min_targets].dropna(subset=feats)
+
     if len(wk) == 0:
         return pd.DataFrame()
+
     wk["projection"] = model.predict(wk[feats]).round(1)
     wk["snap_roll"] = (wk["snap_roll"] * 100).round(0)
     cols = ["player_display_name", "team", "opponent_team", "position",
             "projection", "targets_roll", "snap_roll"]
     cols = [c for c in cols if c in wk.columns]
     return wk[cols].sort_values("projection", ascending=False).reset_index(drop=True)
+
+def build_upcoming_week(season, week):
+    """Manufacture player-week rows for a game not yet played (e.g. Week 1),
+    bridging rolling features from the prior season. Used as a fallback when
+    build_dataset() has no rows for the requested week because games haven't
+    been played yet."""
+    import nflreadpy as nfl
+
+    # 1. Player universe from current-season rosters (correct 2026 teams)
+    ros = nfl.load_rosters([season])
+    ros = ros.to_pandas() if hasattr(ros, "to_pandas") else ros
+    ros = ros[ros["position"].isin(["WR", "TE", "RB"])]
+    ros = ros[["gsis_id", "full_name", "team", "position"]].rename(
+        columns={"gsis_id": "player_id"})
+    ros = ros.dropna(subset=["player_id"]).drop_duplicates(subset=["player_id"])
+
+    # 2. Bridge rolling features from prior season (matches build_dataset's methods)
+    rec = build_dataset()
+    prior = rec[rec["season"] == season - 1].sort_values(["player_id", "week"])
+
+    def _bridge(g):
+        last6 = g.tail(6)
+        return pd.Series({
+            "targets_roll": last6["targets"].mean(),
+            "target_share_roll": last6["target_share"].mean(),
+            "ypt_roll": last6["ypt_game"].mean(),
+            "snap_roll": last6["offense_pct"].mean(),
+            "player_display_name": g.iloc[-1]["player_display_name"],
+        })
+    bridged = (prior.groupby("player_id", group_keys=False)
+               .apply(_bridge, include_groups=False).reset_index())
+
+    # 3. Join rosters (teams) + bridged features
+    df = ros.merge(bridged, on="player_id", how="inner")
+
+    # 4. Attach upcoming-week schedule context (opponent, spread, total)
+    sched = nfl.load_schedules([season])
+    sched = sched.to_pandas() if hasattr(sched, "to_pandas") else sched
+    wk = sched[sched["week"] == week]
+    home = wk[["home_team", "away_team", "spread_line", "total_line"]].rename(
+        columns={"home_team": "team", "away_team": "opponent_team"})
+    home["team_spread"] = home["spread_line"]
+    away = wk[["away_team", "home_team", "spread_line", "total_line"]].rename(
+        columns={"away_team": "team", "home_team": "opponent_team"})
+    away["team_spread"] = -away["spread_line"]
+    ctx = pd.concat([home, away], ignore_index=True)[
+        ["team", "opponent_team", "team_spread", "total_line"]]
+    df = df.merge(ctx, on="team", how="inner")
+
+    # 5. Drop players missing features (rookies / thin data self-correct)
+    df["season"] = season
+    df["week"] = week
+    df = df.dropna(subset=LEAN_FEATS)
+    return df.reset_index(drop=True)
 
 
 # ---- shared confidence currency ----
