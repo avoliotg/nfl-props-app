@@ -68,6 +68,56 @@ def project_week(season, week, min_touches=1.5):
     cols = [c for c in cols if c in wk.columns]
     return wk[cols].sort_values("projection", ascending=False).reset_index(drop=True)
 
+def build_upcoming_week(season, week):
+    """Manufacture player-week rows for a game not yet played (e.g. Week 1),
+    bridging touches and TD rate from the prior season. Fallback when
+    build_dataset() has no rows for the requested week. TD uses no schedule
+    context for the model, but we attach opponent_team for the user's reference."""
+    import nflreadpy as nfl
+
+    ros = nfl.load_rosters([season])
+    ros = ros.to_pandas() if hasattr(ros, "to_pandas") else ros
+    ros = ros[ros["position"].isin(["WR", "TE", "RB", "QB"])]
+    ros = ros[["gsis_id", "full_name", "team", "position"]].rename(
+        columns={"gsis_id": "player_id"})
+    ros = ros.dropna(subset=["player_id"]).drop_duplicates(subset=["player_id"])
+
+    s = build_dataset()
+    prior = s[s["season"] == season - 1].sort_values(["player_id", "week"])
+
+    def _bridge(g):
+        last10 = g.tail(10)   # td_rate uses a 10-game window
+        last6 = g.tail(6)     # touches uses a 6-game window
+        return pd.Series({
+            "td_rate_roll": last10["scored"].mean(),
+            "touches_roll": last6["touches"].mean(),
+            "player_display_name": g.iloc[-1]["player_display_name"],
+        })
+    bridged = (prior.groupby("player_id", group_keys=False)
+               .apply(_bridge, include_groups=False).reset_index())
+
+    df = ros.merge(bridged, on="player_id", how="inner")
+
+    # position flags
+    df["is_rb"] = (df["position"] == "RB").astype(int)
+    df["is_te"] = (df["position"] == "TE").astype(int)
+
+    # opponent lookup (for user reference only — TD model doesn't use it)
+    sched = nfl.load_schedules([season])
+    sched = sched.to_pandas() if hasattr(sched, "to_pandas") else sched
+    wk = sched[sched["week"] == week]
+    home = wk[["home_team", "away_team"]].rename(
+        columns={"home_team": "team", "away_team": "opponent_team"})
+    away = wk[["away_team", "home_team"]].rename(
+        columns={"away_team": "team", "home_team": "opponent_team"})
+    ctx = pd.concat([home, away], ignore_index=True)
+    df = df.merge(ctx, on="team", how="left")
+
+    df["season"] = season
+    df["week"] = week
+    df = df.dropna(subset=FEATS)
+    return df.reset_index(drop=True)
+
 
 # ---- odds <-> probability helpers ----
 def american_to_prob(odds):
