@@ -98,14 +98,13 @@ TIER_COLORS = {"Pass": "#8a7f70", "Lean": "#e6c14d",
 
 HEADER_HELP = {
     "Player": "Qualifying player.",
-    "Proj": "Model projection.",
+    "Proj": "Model projection (yards or catches).",
     "Model %": "Model's probability the player scores a TD.",
-    "Line": "The sportsbook over/under line you entered.",
-    "Odds": "The American odds you entered (e.g. +150).",
-    "Implied %": "Probability implied by the odds you entered.",
-    "Gap": "Edge. Yardage: proj − line. TD: model% − implied%.",
-    "Conf": "Relative confidence 0-100. NOT a win probability.",
-    "Side": "Which side the model favors.",
+    "Line": "The sportsbook over/under line.",
+    "Odds": "The American odds (e.g. +150).",
+    "P(over)%": "Model's probability the result lands OVER the line.",
+    "Edge": "Model probability minus the vig-adjusted breakeven, in points. Positive = value.",
+    "Side": "Which side the edge favors (— means no positive-edge side = pass).",
     "Tier": "Pass / Lean / Strong / Max — bigger edge = stronger.",
 }
 
@@ -131,12 +130,9 @@ def render_html_table(df, cols, aligns):
                 sc = "#4caf72" if val == "OVER" else "#e0655a" if val == "UNDER" else "#c0b090"
                 style += f"font-weight:700;color:{sc};"
                 cells += f'<td style="{style}">{val}</td>'
-            elif c == "Conf":
-                style += f"font-weight:800;color:{conf_color(val)};"
-                cells += f'<td style="{style}">{val:.0f}</td>'
-            elif c == "Gap":
-                gc = "#4caf72" if val > 0 else "#e0655a" if val < 0 else "#c0b090"
-                style += f"font-weight:700;color:{gc};"
+            elif c == "Edge":
+                ec = "#4caf72" if val > 0 else "#e0655a" if val < 0 else "#c0b090"
+                style += f"font-weight:800;color:{ec};"
                 cells += f'<td style="{style}">{val:+.1f}</td>'
             elif isinstance(val, (int, float)) and pd.notna(val):
                 cells += f'<td style="{style}">{val:.1f}</td>'
