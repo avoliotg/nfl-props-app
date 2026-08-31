@@ -548,61 +548,127 @@ with tab_guide:
     st.markdown("""
 ### 🔮 What OpalScales Is
 
-OpalScales projects NFL player prop outcomes using statistical models built on years of data,
-then compares those projections to sportsbook lines to flag where there might be an edge.
-It covers five markets: receiving yards, receptions, rushing yards, QB passing yards, and anytime TD.
+OpalScales projects player prop outcomes using statistical models built on years of data,
+then compares those projections to the sportsbook line to find where there might be an edge.
+It currently covers five NFL markets: receiving yards, receptions, rushing yards, QB passing
+yards, and anytime TD. The same approach can extend to other sports and markets down the road.
 
-It's a tool to inform your decisions.
+Think of it as a second opinion, not a crystal ball. It does the math so you can bring the
+football brain.
 
 ---
 
 ### How to use it
 
-1. **Pick a market** (top dropdown).
+1. **Pick a market** from the top dropdown.
 2. **Pick the season and week.**
-3. On the **Board**, type the sportsbook's number in the "Your Line" column:
-   - Yardage & receptions markets → type the **over/under line** (e.g. 74.5).
-   - Anytime TD → type the **American odds** (e.g. 150 for +150, -200 for -200).
-4. The app grades the **edge**, or how far the projection is from the line, which side it favors, and a confidence tier.
-5. **Save picks to the Log**, tick which ones you actually bet, and the **Scorecard** tracks results over time.
-   The **Player** tab shows any player's history; **Top Plays** ranks your best edges across all markets.
+3. On the **Board**, enter the sportsbook's numbers. Lines auto-fill if they've been imported,
+   but you can type or adjust them yourself:
+   - Yardage and receptions markets: enter the **line** plus the **over and under odds**.
+   - Anytime TD: enter the **American odds** (e.g. 150 for +150, or -200).
+4. The app computes the **edge** for you, tells you which side it favors, and sorts it into a tier.
+5. **Save picks to the Log**, tick the ones you actually bet, and the **Scorecard** tracks how
+   they turn out over time. The **Player** tab shows any player's projection history versus real
+   results, and **Top Plays** ranks your best edges across every market at once.
+
+A note on your edits: anything you type on the Board lives only in your session. It never changes
+the shared line data, so feel free to test alternate lines or numbers from a different book. Your
+tinkering stays yours.
 
 ---
 
-### How to read the numbers
+### How to read the columns
 
-- **Proj**: the model's projection. Units differ by market: *yards* (receiving, rushing, QB), *catches* (receptions), or *probability %* (TD).
-- **Gap**: how far the projection is from the line (the raw edge, in that market's units).
-- **Confidence (0–100)**: a *relative* score for weighing plays against each other. **It is NOT a win probability.** High = "big edge relative to this market's history," not "wins X% of the time."
-- **Tier**: plain-English verdict: **Pass** (skip) · **Lean** (mild) · **Strong** (solid) · **Max** (biggest disagreement with the line). Strong/Max are where the model's edge tested best.
+- **Proj**: the model's projection. Units depend on the market: *yards* (receiving, rushing,
+  passing), *catches* (receptions), or a *probability %* (anytime TD).
+- **Line**: the sportsbook's over/under number for that prop.
+- **Over / Under**: the American odds on each side of the line. These matter more than they look,
+  because the price is how the book takes its cut (see the edge example below).
+- **P(over)%**: the model's estimated probability the result lands over the line. This is the
+  honest "how likely" number, already accounting for how much uncertainty there is early in the
+  season.
+- **Edge**: the heart of the whole tool. It is your model probability minus the break-even
+  probability the odds require. Positive means the model thinks the bet is worth more than its
+  price. Negative means the price is too steep, even if the projection "agrees" with you. Measured
+  in percentage points, and it means the same thing across every market, so a +4 on a rushing prop
+  is directly comparable to a +4 on a TD.
+- **Side**: which side the edge favors (Over or Under). A dash means neither side clears break-even,
+  so it is a pass.
+- **Tier**: the plain-English verdict. **Pass** (skip it), **Lean** (small edge), **Strong** (solid
+  edge), **Max** (biggest edge). Bigger edge, stronger tier.
 
 ---
 
-### The season arc — trust it more as the year goes on
+### A real example: why "the projection disagrees" is not enough
 
-**The model gets stronger as the season progresses.**
+Say the board shows a receiver projected for 7.1 receptions, and the line is 7.5, priced at +116
+over and -154 under. (These numbers are pulled from a real prop.)
 
-- **Weeks 1–3:** weakest. It leans on last season's data since there isn't much current-season form yet. Projections are shakier and wrapped in wide uncertainty. Bet light, if at all.
-- **Rookies** won't populate in Week 1 (no NFL history); they appear Week 2+ but stay volatile until they've banked a few games.
-- **Midseason onward:** strongest, working off rich current-season form. Trust it most here.
+Your gut says: model says 7.1, line says 7.5, so bet the under. That gut is a trap, and the tool
+is built to catch it.
 
-Think of it as a model that *earns* your trust as real data accumulates.
+The model does lean under, giving him about a 55% chance to land below 7.5. But look at the price.
+The under is -154, which means you need to win about 61% of the time just to break even after the
+book's cut. The model only gives you 55%. So the under is likely, but not likely *enough* to beat
+what you are paying for it. Both sides come back with a negative edge, so the honest call is a pass.
+
+The lesson: a projection that "disagrees" with the line is not automatically a bet. Most props,
+most of the time, should be a pass. That is what an efficient market looks like. The edge number
+tells you the rare times the line is actually soft enough to be worth it. Chase the edge, not the
+gut feeling.
 
 ---
 
-### Honest limitations (read this part)
+### The season arc: trust it more as the year goes on
 
-- Projections are **guides, not guarantees.** Football is noisy, and a great matchup can still bust. No model captures that.
-- The model is near the **ceiling of what pre-game data can predict.** The rest is genuine randomness. Anyone claiming certainty is selling something.
-- It doesn't see **injuries, benchings, weather surprises, or coverage matchups** in real time. That context is *your* job. Use your football brain on top of the model!!!
-- Betting markets are efficient. The edge, if it exists, is small and lives in the details.
+The model gets stronger as the season progresses, and it is honest about that.
+
+- **Weeks 1 to 3**: weakest. There is little current-season form yet, so it leans on last season's
+  data and wraps every projection in extra uncertainty. Edges will look smaller and more cautious
+  on purpose. Bet light, if at all.
+- **Midseason onward**: strongest. It is working off rich current-season data, and the extra
+  caution fades away. Trust it most here.
+
+That early-season caution is not a bug, it is the point. When the model cannot see clearly, it
+tells you so by pulling its probabilities toward a coin flip. It earns your trust as real data
+piles up.
+
+---
+
+### Beware of Week 1
+
+The very start of the season is the trickiest stretch, so a few things to know:
+
+- **Rookies will not appear in Week 1.** They have no NFL history to project from. They show up
+  once they have banked a game or two of real data, and stay volatile until they have a few under
+  their belt.
+- **Players returning from a lost season may not appear either.** If someone missed all of last
+  year, there is no recent data to build on, so the model sits them out rather than guess.
+- **Players who changed teams** are projected on their new team and matchup, but their underlying
+  form still comes from last season, so read them with a little extra skepticism early.
+- **Stable veterans in the same role** are your safest ground in Week 1. Last year's data transfers
+  cleanly for them, so lean on those and use your judgment on the rest.
+
+---
+
+### Honest limitations (please read this part)
+
+- Projections are **guides, not guarantees.** Football is noisy, and a perfect matchup can still
+  bust. No model captures that.
+- The model is near the **ceiling of what pre-game data can predict.** The rest is genuine
+  randomness. Anyone claiming certainty is selling something.
+- It does not see **injuries, benchings, weather surprises, or coverage matchups** in real time.
+  That context is your job. Bring your football brain and layer it on top.
+- Markets are efficient. The edge, if it exists, is small and lives in the details, which is
+  exactly why the tool measures it so carefully.
 
 ---
 
 ### The OpalScales approach
 
-Small edges. Obscure players over stars (the market is sharpest on stars). Discipline over hype.
-Track everything honestly, and let the results tell you what's working.
+Small edges. Obscure players over stars, because the market is sharpest on the names everyone
+watches. Discipline over hype. Track everything honestly, and let the results tell you what is
+actually working.
 
 *Bet responsibly. This is a tool for informed decisions, not financial advice.*
 """)
