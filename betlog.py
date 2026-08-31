@@ -1,7 +1,6 @@
 """
 Bet log — persistent storage for graded picks.
-Now backed by the Supabase 'bets' table (was CSV). Function names/signatures
-kept identical so the rest of the app is unchanged.
+Backed by the Supabase 'bets' table.
 
 Note: the app uses the column name 'result_yards'; the database uses 'result'.
 This module translates between them so app.py doesn't need to change.
@@ -11,8 +10,9 @@ import pandas as pd
 import db
 
 COLUMNS = ["logged_at", "market", "season", "week", "player",
-           "projection", "line", "gap", "confidence", "side",
-           "tier", "bet", "result_yards", "outcome"]
+           "projection", "line", "over_odds", "under_odds",
+           "edge", "p_over", "side", "tier", "bet",
+           "result_yards", "outcome"]
 
 TABLE = "bets"
 
@@ -31,10 +31,8 @@ def load_log(user_id="admin"):
     if not rows:
         return pd.DataFrame(columns=COLUMNS)
     df = pd.DataFrame(rows)
-    # translate DB 'result' -> app's 'result_yards'
     if "result" in df.columns:
         df = df.rename(columns={"result": "result_yards"})
-    # ensure all expected columns exist (in case some are null/missing)
     for c in COLUMNS:
         if c not in df.columns:
             df[c] = None
@@ -55,15 +53,16 @@ def append_entries(entries: pd.DataFrame, user_id="admin"):
             "player": row.get("player"),
             "projection": _num(row.get("projection")),
             "line": _num(row.get("line")),
-            "gap": _num(row.get("gap")),
-            "confidence": _num(row.get("confidence")),
+            "over_odds": _num(row.get("over_odds")),
+            "under_odds": _num(row.get("under_odds")),
+            "edge": _num(row.get("edge")),
+            "p_over": _num(row.get("p_over")),
             "side": row.get("side"),
             "tier": row.get("tier"),
             "bet": bool(row.get("bet")) if pd.notna(row.get("bet")) else False,
             "result": _num(row.get("result_yards")),
             "outcome": row.get("outcome") if pd.notna(row.get("outcome")) else None,
         }
-        # delete any existing row for this unique pick, then insert (latest wins)
         (client.table(TABLE)
                .delete()
                .eq("user_id", user_id)
@@ -86,7 +85,7 @@ def grade_log(actuals_lookup, is_prob=False, user_id="admin"):
 
     for _, row in log.iterrows():
         if pd.notna(row.get("outcome")) and str(row.get("outcome")).strip():
-            continue  # already graded
+            continue
         actual = actuals_lookup(row["season"], row["week"], row["player"])
         if actual is None:
             continue
