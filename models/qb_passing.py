@@ -130,11 +130,11 @@ def player_history(season, player_name, min_attempts=0.5):
 
 
 def actual_result(season, week, player_name):
-    """Actual receiving yards for grading. Returns the number, or None."""
+    """Actual passing yards for grading. Returns the number, or None."""
     df = build_dataset()
     m = df[(df["season"] == season) & (df["week"] == week) &
            (df["player_display_name"] == player_name)]
     if len(m) == 0:
         return None
-    val = m.iloc[0]["receiving_yards"]
+    val = m.iloc[0]["passing_yards"]
     return None if pd.isna(val) else float(val)
