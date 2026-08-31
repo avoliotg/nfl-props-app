@@ -24,7 +24,7 @@ def build_dataset():
 
     for col in ["targets", "target_share"]:
         rec[f"{col}_roll"] = (rec.groupby("player_id")[col]
-                              .transform(lambda s: s.shift(1).rolling(6, min_periods=3).mean()))
+                              .transform(lambda s: s.shift(1).rolling(6, min_periods=1).mean()))
 
     snaps = data_utils.load_snap_counts(SEASONS)
     snaps_s = snaps[["season", "week", "team", "player", "offense_pct"]].copy()
@@ -45,7 +45,7 @@ def build_dataset():
     rec = rec.merge(snaps_s, on=["season", "week", "team", "_join_name"], how="left")
     rec = rec.drop(columns=["_join_name"])
     rec["snap_roll"] = (rec.groupby("player_id")["offense_pct"]
-                        .transform(lambda s: s.shift(1).rolling(6, min_periods=2).mean()))
+                        .transform(lambda s: s.shift(1).rolling(6, min_periods=1).mean()))
 
     games = data_utils.load_schedules(SEASONS)
     home = games[["season", "week", "home_team", "spread_line", "total_line"]].rename(

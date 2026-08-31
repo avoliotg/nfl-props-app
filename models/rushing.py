@@ -22,7 +22,7 @@ def build_dataset():
     rush = rush.sort_values(["player_id", "season", "week"]).reset_index(drop=True)
 
     rush["carries_roll"] = (rush.groupby("player_id")["carries"]
-                            .transform(lambda s: s.shift(1).rolling(6, min_periods=3).mean()))
+                            .transform(lambda s: s.shift(1).rolling(6, min_periods=1).mean()))
 
     games = data_utils.load_schedules(SEASONS)
     home = games[["season", "week", "home_team", "spread_line", "total_line"]].rename(

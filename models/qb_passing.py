@@ -23,7 +23,7 @@ def build_dataset():
     qb = qb.sort_values(["player_id", "season", "week"]).reset_index(drop=True)
 
     qb["attempts_roll"] = (qb.groupby("player_id")["attempts"]
-                           .transform(lambda s: s.shift(1).rolling(6, min_periods=3).mean()))
+                           .transform(lambda s: s.shift(1).rolling(6, min_periods=1).mean()))
 
     games = data_utils.load_schedules(SEASONS)
     home = games[["season", "week", "home_team", "spread_line", "total_line", "roof", "wind"]].rename(
@@ -47,6 +47,11 @@ def build_dataset():
                            .transform(lambda s: s.shift(1).rolling(6, min_periods=3).mean()))
     qb = qb.merge(qd[["season", "week", "defteam", "def_pass_roll"]].rename(
         columns={"defteam": "opponent_team"}), on=["season", "week", "opponent_team"], how="left")
+
+    # thin/missing opponent-defense data → default to league average (neutral),
+    # rather than dropping the player or trusting a noisy 1-2 game read
+    qb["def_pass_roll"] = qb["def_pass_roll"].fillna(qb["def_pass_roll"].mean())
+
     return qb
 
 
