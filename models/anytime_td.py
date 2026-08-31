@@ -59,6 +59,11 @@ def project_week(season, week, min_touches=1.5):
     s = build_dataset()
     wk = s[(s["season"] == season) & (s["week"] == week)].copy()
     wk = wk[wk["touches_roll"] >= min_touches].dropna(subset=feats)
+
+    if len(wk) == 0:
+        wk = build_upcoming_week(season, week)
+        wk = wk[wk["touches_roll"] >= min_touches].dropna(subset=feats)
+
     if len(wk) == 0:
         return pd.DataFrame()
     wk["projection"] = (model.predict_proba(wk[feats])[:, 1] * 100).round(1)  # % chance
