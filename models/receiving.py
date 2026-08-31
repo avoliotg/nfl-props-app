@@ -153,7 +153,7 @@ def player_history(season, player_name, min_targets=0.5):
 def all_players(season):
     """List of players who qualify in a season (for the search dropdown)."""
     rec = build_dataset()
-    p = rec[(rec["season"] == season) & (rec["targets_roll"] >= 3)]
+    p = rec[(rec["season"] == season) & (rec["targets_roll"] >= 2)]
     return sorted(p["player_display_name"].dropna().unique().tolist())
 
 

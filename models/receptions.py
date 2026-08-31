@@ -120,7 +120,7 @@ def confidence_for_gap(gap):
 
 def all_players(season):
     rec = build_dataset()
-    p = rec[(rec["season"] == season) & (rec["targets_roll"] >= 3)]
+    p = rec[(rec["season"] == season) & (rec["targets_roll"] >= 2)]
     return sorted(p["player_display_name"].dropna().unique().tolist())
 
 
