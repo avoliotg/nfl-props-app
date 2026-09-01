@@ -310,6 +310,17 @@ with tab_board:
                 cols = ["Player", "Proj", "Line", "P(over)%", "Edge", "Side", "Tier"]
             aligns = ["left"] * len(cols)
 
+            # summary stats (market-agnostic: edge/tier mean the same everywhere)
+            n_lines = len(graded)
+            n_positive = int((graded["edge"] > 0).sum())
+            tier_counts = graded["tier"].value_counts()
+            n_max = int(tier_counts.get("Max", 0))
+            n_strong = int(tier_counts.get("Strong", 0))
+            n_lean = int(tier_counts.get("Lean", 0))
+            st.markdown(
+                f"**{n_lines}** lines entered · **{n_positive}** positive edges · "
+                f"{n_max} Max, {n_strong} Strong, {n_lean} Lean")
+
             st.markdown("### Your entered lines")
             if graded["approx"].any():
                 st.caption("⚠️ Rows without imported odds use a −110 assumption "
