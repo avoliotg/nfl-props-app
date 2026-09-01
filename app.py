@@ -235,7 +235,7 @@ with tab_board:
         display_cols = (["player_display_name", "team", "opponent_team", "position",
                          "projection"] + vol_cols + input_cols)
         edited = st.data_editor(
-            board[display_cols], use_container_width=True, hide_index=True,
+            board[display_cols], width='stretch', hide_index=True,
             disabled=[c for c in display_cols if c not in input_cols],
             column_config=colcfg, key=f"board_editor_{market_key}")
 
@@ -329,7 +329,7 @@ with tab_board:
             grid = graded[save_cols].copy()
             grid["bet"] = False
             logged_view = st.data_editor(
-                grid, use_container_width=True, hide_index=True,
+                grid, width='stretch', hide_index=True,
                 disabled=[c for c in save_cols],
                 column_config={
                     "player_display_name": st.column_config.TextColumn("Player", width="medium"),
@@ -420,7 +420,7 @@ with tab_player:
             st.markdown(f"#### Your logged picks on {player}")
             st.dataframe(plog[["season", "week", "line", "projection", "p_over",
                                "edge", "side", "tier", "bet", "result_yards", "outcome"]],
-                         use_container_width=True, hide_index=True)
+                         width='stretch', hide_index=True)
 
 # ============ SCORECARD ============
 with tab_scorecard:
@@ -452,13 +452,13 @@ with tab_scorecard:
         by_tier = (log["tier"].value_counts()
                    .reindex(["Max", "Strong", "Lean", "Pass"]).fillna(0).astype(int))
         st.dataframe(by_tier.rename("Count").reset_index().rename(columns={"index": "Tier"}),
-                     use_container_width=True, hide_index=True)
+                     width='stretch', hide_index=True)
 
         st.markdown("#### All logged picks")
         st.dataframe(log[["season", "week", "player", "projection", "line",
                           "edge", "p_over", "side", "tier", "bet",
                           "result_yards", "outcome"]],
-                     use_container_width=True, hide_index=True)
+                     width='stretch', hide_index=True)
 
         gr = log[log["outcome"].isin(["WIN", "LOSS"])]
         if len(gr) > 0:
