@@ -684,6 +684,16 @@ if IS_ADMIN:
                    "player, market, line, over_odds, under_odds. "
                    "Imports are cumulative — re-importing a player updates their line.")
 
+        if "import_result" in st.session_state:
+            r = st.session_state.pop("import_result")
+            st.success(f"✅ Imported {r['imported']} line(s) for {r['season']} Week {r['week']}.")
+            if r["by_market"]:
+                breakdown = " · ".join(f"{k}: {v}" for k, v in r["by_market"].items())
+                st.caption(f"By market — {breakdown}")
+            if r["bad_market"]:
+                st.warning("Unrecognized market(s) skipped: "
+                           + ", ".join(sorted(set(r["bad_market"]))))
+
         ic1, ic2 = st.columns(2)
         with ic1:
             imp_season = st.number_input("Season", min_value=2020, max_value=2030,
@@ -714,13 +724,11 @@ if IS_ADMIN:
                         st.warning("No data rows found (need a header row + at least one line).")
                     else:
                         result = db.import_lines(rows, imp_season, imp_week)
-                        st.success(f"Imported {result['imported']} line(s) for "
-                                   f"{imp_season} Week {imp_week}.")
-                        if result["by_market"]:
-                            breakdown = " · ".join(f"{k}: {v}" for k, v in result["by_market"].items())
-                            st.caption(f"By market — {breakdown}")
-                        if result["bad_market"]:
-                            st.warning("Unrecognized market(s) — these rows were skipped: "
-                                       + ", ".join(sorted(set(result['bad_market']))))
+                        st.session_state["import_result"] = {
+                            "imported": result["imported"],
+                            "season": imp_season, "week": imp_week,
+                            "by_market": result["by_market"],
+                            "bad_market": result["bad_market"],
+                        }
                         st.cache_data.clear()
                         st.rerun()
