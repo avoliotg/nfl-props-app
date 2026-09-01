@@ -156,7 +156,8 @@ def render_html_table(df, cols, aligns):
     header = "".join(
         f'<th title="{HEADER_HELP.get(h,h)}" style="padding:11px 12px;text-align:{a};'
         f'background:#e0873a;color:#161310;font-weight:800;font-size:0.8rem;'
-        f'text-transform:uppercase;letter-spacing:0.05em;cursor:help;">{h}</th>'
+        f'text-transform:uppercase;letter-spacing:0.05em;cursor:help;'
+        f'position:sticky;top:0;z-index:2;">{h}</th>'
         for h, a in zip(cols, aligns))
 
     return f"""<div style="border-radius:10px;overflow-x:auto;-webkit-overflow-scrolling:touch;
