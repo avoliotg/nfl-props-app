@@ -10,6 +10,17 @@ def get_client():
     key = st.secrets["SUPABASE_KEY"]
     return create_client(url, key)
 
+def get_user_client(access_token, refresh_token):
+    """Build a Supabase client carrying a specific user's session, so its
+    queries run AS that authenticated user (making auth.uid() resolve at the DB).
+    Rebuilt per rerun from tokens stored in session_state. NOT cached — caching
+    would leak one user's session across users."""
+    url = st.secrets["SUPABASE_URL"]
+    key = st.secrets["SUPABASE_KEY"]
+    client = create_client(url, key)
+    client.auth.set_session(access_token, refresh_token)
+    return client
+
 
 def test_connection():
     """Quick check: can we reach the database? Returns (ok, message)."""
@@ -133,12 +144,19 @@ def sign_up(email, password):
 
 
 def sign_in(email, password):
-    """Log in an existing user. Returns (user_dict_or_None, message)."""
+    """Log in an existing user. Returns (user_dict_or_None, message).
+    The user dict now also carries the session tokens so we can rebuild an
+    authenticated client per rerun."""
     client = get_client()
     try:
         res = client.auth.sign_in_with_password({"email": email, "password": password})
         if res.user:
-            return {"id": res.user.id, "email": res.user.email}, "Logged in!"
+            return {
+                "id": res.user.id,
+                "email": res.user.email,
+                "access_token": res.session.access_token,
+                "refresh_token": res.session.refresh_token,
+            }, "Logged in!"
         return None, "Login failed — check your email and password."
     except Exception as e:
         return None, f"Login error: {e}"
