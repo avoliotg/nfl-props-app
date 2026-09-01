@@ -160,7 +160,8 @@ def render_html_table(df, cols, aligns):
         f'position:sticky;top:0;z-index:2;">{h}</th>'
         for h, a in zip(cols, aligns))
 
-    return f"""<div style="border-radius:10px;overflow-x:auto;-webkit-overflow-scrolling:touch;
+    return f"""<div style="border-radius:10px;overflow-x:auto;overflow-y:auto;max-height:70vh;
+        -webkit-overflow-scrolling:touch;
         border:1px solid #3a2f1e;box-shadow:0 4px 16px rgba(0,0,0,0.4);margin-top:8px;max-width:1000px;">
         <table style="width:100%;border-collapse:collapse;font-size:0.9rem;
         font-family:'Source Sans Pro',sans-serif;">
