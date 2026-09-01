@@ -347,7 +347,7 @@ with tab_board:
                 entries["outcome"] = None
                 entries = entries.rename(columns={"player_display_name": "player"})
                 entries = entries[betlog.COLUMNS]
-                betlog.append_entries(entries, st.session_state.user["id"])
+                betlog.append_entries(entries, st.session_state.user)
                 st.success(f"Saved {len(entries)} pick(s) to the log.")
 
 # ============ PLAYER ============
@@ -414,7 +414,7 @@ with tab_player:
                 unit = "prob pts" if IS_PROB else ""
                 st.caption(f"Avg miss for {player}: **{mae:.1f} {unit}** over {len(graded_h)} games.")
 
-        log = betlog.load_log(st.session_state.user["id"])
+        log = betlog.load_log(st.session_state.user)
         plog = log[(log["market"] == market_key) & (log["player"] == player)] if len(log) else log
         if len(plog) > 0:
             st.markdown(f"#### Your logged picks on {player}")
@@ -426,7 +426,7 @@ with tab_player:
 with tab_scorecard:
     st.subheader(f"{market_name} — Season Scorecard")
 
-    log = betlog.load_log(st.session_state.user["id"])
+    log = betlog.load_log(st.session_state.user)
     log = log[log["market"] == market_key] if len(log) else log
 
     if len(log) == 0:
@@ -444,7 +444,7 @@ with tab_scorecard:
         if st.button("🎯 Grade picks (pull actual results)"):
             betlog.grade_log(
                 lambda s, w, p: module.actual_result(int(s), int(w), p),
-                is_prob=IS_PROB, user_id=st.session_state.user["id"])
+                is_prob=IS_PROB, user=st.session_state.user)
             st.success("Graded. Refreshing...")
             st.rerun()
 
@@ -478,7 +478,7 @@ with tab_top:
                "across all markets, ranked by edge (model probability minus the "
                "vig-adjusted breakeven). Enter + save picks in each market's Board first.")
 
-    log = betlog.load_log(st.session_state.user["id"])
+    log = betlog.load_log(st.session_state.user)
     if len(log) == 0:
         st.info("No saved picks yet. Enter lines/odds on each market's Board and Save to Log.")
     else:

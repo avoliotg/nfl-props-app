@@ -2,6 +2,10 @@
 Bet log — persistent storage for graded picks.
 Backed by the Supabase 'bets' table.
 
+Now uses a per-user authenticated Supabase client (built from the user's
+session tokens) so queries run AS that user — required for RLS. Functions
+take the full `user` dict (id + tokens) from st.session_state.user.
+
 Note: the app uses the column name 'result_yards'; the database uses 'result'.
 This module translates between them so app.py doesn't need to change.
 """
@@ -17,14 +21,21 @@ COLUMNS = ["logged_at", "market", "season", "week", "player",
 TABLE = "bets"
 
 
-def _client():
+def _client(user):
+    """Return a Supabase client authenticated AS the given user (for RLS),
+    built from the session tokens in the user dict. Falls back to the shared
+    anon client if tokens are missing."""
+    if user and isinstance(user, dict) and user.get("access_token") and user.get("refresh_token"):
+        return db.get_user_client(user["access_token"], user["refresh_token"])
     return db.get_client()
 
 
-def load_log(user_id="admin"):
-    """Return the full log as a DataFrame (empty if none yet)."""
+def load_log(user):
+    """Return the full log as a DataFrame (empty if none yet).
+    `user` is the session_state.user dict (id + tokens)."""
+    user_id = user["id"]
     try:
-        resp = _client().table(TABLE).select("*").eq("user_id", user_id).execute()
+        resp = _client(user).table(TABLE).select("*").eq("user_id", user_id).execute()
         rows = resp.data
     except Exception:
         rows = []
@@ -39,10 +50,11 @@ def load_log(user_id="admin"):
     return df[COLUMNS]
 
 
-def append_entries(entries: pd.DataFrame, user_id="admin"):
+def append_entries(entries: pd.DataFrame, user):
     """Insert/replace graded picks in the DB, de-duplicating on
     market+season+week+player (latest entry wins)."""
-    client = _client()
+    user_id = user["id"]
+    client = _client(user)
     for _, row in entries.iterrows():
         record = {
             "user_id": user_id,
@@ -72,14 +84,15 @@ def append_entries(entries: pd.DataFrame, user_id="admin"):
                .eq("player", record["player"])
                .execute())
         client.table(TABLE).insert(record).execute()
-    return load_log(user_id)
+    return load_log(user)
 
 
-def grade_log(actuals_lookup, is_prob=False, user_id="admin"):
+def grade_log(actuals_lookup, is_prob=False, user=None):
     """Fill in result + outcome for logged picks that don't have a result yet.
     actuals_lookup(season, week, player) -> actual result, or None."""
-    client = _client()
-    log = load_log(user_id)
+    user_id = user["id"]
+    client = _client(user)
+    log = load_log(user)
     if len(log) == 0:
         return log
 
@@ -109,7 +122,7 @@ def grade_log(actuals_lookup, is_prob=False, user_id="admin"):
                .eq("week", int(row["week"]))
                .eq("player", row["player"])
                .execute())
-    return load_log(user_id)
+    return load_log(user)
 
 
 def now_stamp():
