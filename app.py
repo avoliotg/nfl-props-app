@@ -3,7 +3,7 @@ import pandas as pd
 import betlog
 import db
 import mc
-ADMIN_EMAIL = "opalscales30@gmail.com"
+ADMIN_EMAIL = "avoliotg@gmail.com"
 OPAL_BANNER = ("📣 **Note from OpalScales:** Be wary of huge edges early in the season, "
                "they're often the model's early season blind spots, not real value. See the Guide for details.")
 
