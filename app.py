@@ -143,7 +143,14 @@ def render_html_table(df, cols, aligns):
             else:
                 if c == "Player":
                     style += "font-weight:600;"
-                cells += f'<td style="{style}">{val}</td>'
+                    team = r["team"] if "team" in r and pd.notna(r.get("team")) else ""
+                    tag = (f'<span style="font-size:0.7rem;font-weight:700;color:#e0873a;'
+                           f'background:#2a2318;border:1px solid #3a2f1e;border-radius:4px;'
+                           f'padding:1px 5px;margin-left:6px;vertical-align:middle;">{team}</span>'
+                           if team else "")
+                    cells += f'<td style="{style}">{val}{tag}</td>'
+                else:
+                    cells += f'<td style="{style}">{val}</td>'
         rows += f'<tr style="background:{bg};">{cells}</tr>'
 
     header = "".join(
