@@ -91,6 +91,14 @@ def _normalize_market(raw):
     key = str(raw).strip().lower()
     return MARKET_MAP.get(key)
 
+def _norm_name(name):
+    """Normalize a player name for matching: lowercase, strip whitespace.
+    Protects against capitalization/spacing differences between CSV extraction
+    and official roster spelling (e.g. 'Demario Douglas' vs 'DeMario Douglas')."""
+    if name is None:
+        return ""
+    return str(name).strip().lower()
+
 
 def import_lines(rows, season, week, user, sport="NFL"):
     """Append a batch of imported lines as a NEW timestamped snapshot into 'lines'.
@@ -149,7 +157,7 @@ def import_lines(rows, season, week, user, sport="NFL"):
         edge = None
         board = _get_board(mkt)
         if len(board) > 0:
-            match = board[board["player_display_name"] == player]
+            match = board[board["player_display_name"].apply(_norm_name) == _norm_name(player)]
             if len(match) > 0:
                 row = match.iloc[0]
                 projection = float(row["projection"])
@@ -193,7 +201,7 @@ def get_lines(season, week, market, user, sport="NFL"):
                 .order("captured_at", desc=False).execute())
         out = {}
         for r in resp.data:
-            out[r["player"]] = {"line": r.get("line"),
+            out[_norm_name(r["player"])] = {"line": r.get("line"),
                                 "over_odds": r.get("over_odds"),
                                 "under_odds": r.get("under_odds"),
                                 "captured_at": r.get("captured_at")}

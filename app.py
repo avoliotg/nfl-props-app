@@ -219,7 +219,7 @@ with tab_board:
         pool = db.get_lines(season, week, market_key, st.session_state.user)
 
         def _prefill_field(player_name, field):
-            entry = pool.get(player_name)
+            entry = pool.get(db._norm_name(player_name))
             return entry.get(field) if entry else None
 
         vol_labels = {"targets_roll": "Recent Tgts", "snap_roll": "Recent Snap%",
