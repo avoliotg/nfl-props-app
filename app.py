@@ -456,8 +456,9 @@ with tab_player:
                 header = "".join(
                     f'<th style="padding:10px 12px;text-align:left;background:#e0873a;'
                     f'color:#161310;font-weight:800;font-size:0.78rem;text-transform:uppercase;'
-                    f'letter-spacing:0.04em;">{h}</th>' for h in heads)
-                return f"""<div style="border-radius:10px;overflow-x:auto;-webkit-overflow-scrolling:touch;border:1px solid #3a2f1e;
+                    f'letter-spacing:0.04em;position:sticky;top:0;z-index:2;">{h}</th>' for h in heads)
+                return f"""<div style="border-radius:10px;overflow-x:auto;overflow-y:auto;max-height:70vh;
+                    -webkit-overflow-scrolling:touch;border:1px solid #3a2f1e;
                     box-shadow:0 4px 16px rgba(0,0,0,0.4);margin-top:8px;max-width:900px;">
                     <table style="width:100%;border-collapse:collapse;font-size:0.88rem;
                     font-family:'Source Sans Pro',sans-serif;">
@@ -594,12 +595,12 @@ with tab_top:
                 heads = ["Tier", "Edge", "Player", "Market", "Proj", "Line", "Side", "Bet", "Logged"]
                 aligns = ["left", "right", "left", "left", "right", "right", "left", "center", "right"]
                 header = "".join(
-                    f'<th style="padding:11px 12px;text-align:{a};background:#e0873a;'
-                    f'color:#161310;font-weight:800;font-size:0.8rem;text-transform:uppercase;'
-                    f'letter-spacing:0.04em;">{h}</th>' for h, a in zip(heads, aligns))
+                    f'<th style="padding:10px 12px;text-align:left;background:#e0873a;'
+                    f'color:#161310;font-weight:800;font-size:0.78rem;text-transform:uppercase;'
+                    f'letter-spacing:0.04em;">{h}</th>' for h in heads)
                 return f"""<div style="border-radius:10px;overflow-x:auto;-webkit-overflow-scrolling:touch;border:1px solid #3a2f1e;
-                    box-shadow:0 4px 16px rgba(0,0,0,0.4);margin-top:8px;">
-                    <table style="width:100%;border-collapse:collapse;font-size:0.9rem;
+                    box-shadow:0 4px 16px rgba(0,0,0,0.4);margin-top:8px;max-width:900px;">
+                    <table style="width:100%;border-collapse:collapse;font-size:0.88rem;
                     font-family:'Source Sans Pro',sans-serif;">
                     <thead><tr>{header}</tr></thead><tbody>{rows}</tbody></table></div>"""
 
