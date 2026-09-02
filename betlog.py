@@ -25,9 +25,7 @@ def _client(user):
     """Return a Supabase client authenticated AS the given user (for RLS),
     built from the session tokens in the user dict. Falls back to the shared
     anon client if tokens are missing."""
-    if user and isinstance(user, dict) and user.get("access_token") and user.get("refresh_token"):
-        return db.get_user_client(user["access_token"], user["refresh_token"])
-    return db.get_client()
+    return db.get_authed_client(user)
 
 
 def load_log(user):

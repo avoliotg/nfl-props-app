@@ -111,7 +111,7 @@ def import_lines(rows, season, week, user, sport="NFL"):
     if user and isinstance(user, dict) and user.get("access_token") and user.get("refresh_token"):
         client = get_user_client(user["access_token"], user["refresh_token"])
     else:
-        client = get_client()
+        client = get_authed_client(user)
 
     captured_at = datetime.now(timezone.utc).isoformat()
     imported = 0
