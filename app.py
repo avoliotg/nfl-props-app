@@ -764,7 +764,7 @@ if IS_ADMIN:
                     if len(rows) == 0:
                         st.warning("No data rows found (need a header row + at least one line).")
                     else:
-                        result = db.import_lines(rows, imp_season, imp_week)
+                        result = db.import_lines(rows, imp_season, imp_week, st.session_state.user)
                         st.session_state["import_result"] = {
                             "imported": result["imported"],
                             "season": imp_season, "week": imp_week,

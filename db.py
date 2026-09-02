@@ -64,14 +64,18 @@ def _normalize_market(raw):
     return MARKET_MAP.get(key)
 
 
-def import_lines(rows, season, week, sport="NFL"):
+def import_lines(rows, season, week, user, sport="NFL"):
     """Append a batch of imported lines as a NEW timestamped snapshot into 'lines'.
     Each import adds rows (never overwrites) so line movement is preserved for CLV.
+    Uses the admin's authenticated client so RLS (write-for-admin-only) resolves.
     rows: list of dicts with keys player, market, line, over_odds, under_odds.
     Returns a summary dict: imported count, per-market counts, and any problems.
     """
     from datetime import datetime, timezone
-    client = get_client()
+    if user and isinstance(user, dict) and user.get("access_token") and user.get("refresh_token"):
+        client = get_user_client(user["access_token"], user["refresh_token"])
+    else:
+        client = get_client()
     captured_at = datetime.now(timezone.utc).isoformat()
     imported = 0
     by_market = {}
@@ -94,7 +98,7 @@ def import_lines(rows, season, week, sport="NFL"):
         }
         if not record["player"]:
             continue
-        client.table("lines").insert(record).execute()   # append, don't overwrite
+        client.table("lines").insert(record).execute()
         imported += 1
         by_market[mkt] = by_market.get(mkt, 0) + 1
     return {"imported": imported, "by_market": by_market,
