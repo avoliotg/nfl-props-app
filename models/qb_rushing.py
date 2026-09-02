@@ -3,6 +3,9 @@ QB Rushing Yards market module — self-contained engine.
 Separate from rushing.py because QB rushing behaves fundamentally differently
 from RB rushing (carries mix kneels/sneaks/scrambles, not homogeneous RB carries).
 Validated 2025 OOS: corr 0.51 (best of all markets), 2-feature model.
+Projects ALL QBs with valid rolling data — pocket passers included, since their
+low-rushing lines are just as bettable (and just as easy for the model to call
+correctly) as scramblers' high-rushing lines.
 """
 import numpy as np
 import pandas as pd
@@ -14,10 +17,7 @@ from sklearn.linear_model import LinearRegression
 SEASONS = [2022, 2023, 2024, 2025, 2026]
 LEAN_FEATS = ["rush_yds_roll", "carries_roll"]
 
-# QB rushing tiers — same scale as RB rushing (both are yardage markets)
 GAP_ANCHORS = [(0, 0.49), (3, 0.55), (7, 0.61), (15, 0.68), (30, 0.70)]
-
-QUALIFY_FLOOR = 12  # rush_yds_roll floor: separates real rushing QBs from pocket passers
 
 
 @st.cache_data(show_spinner="Pulling & preparing NFL data (first run only)...")
@@ -47,7 +47,6 @@ def build_dataset():
 @st.cache_resource(show_spinner="Training model...")
 def load_model():
     qb = build_dataset()
-    train = qb[(qb["season"] <= 2024) & (qb["rush_yds_roll"] >= QUALIFY_FLOOR)].dropna(
-        subset=LEAN_FEATS + ["rushing_yards"])
+    train = qb[qb["season"] <= 2024].dropna(subset=LEAN_FEATS + ["rushing_yards"])
     model = LinearRegression().fit(train[LEAN_FEATS], train["rushing_yards"])
     return model, LEAN_FEATS
