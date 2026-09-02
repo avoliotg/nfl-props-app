@@ -91,11 +91,11 @@ else:
     PROJ_LABEL = "Proj Yds"
 st.divider()
 
-tab_labels = ["📋 Board", "🔍 Player", "📊 Scorecard", "🎯 Top Plays", "📖 Guide"]
+tab_labels = ["📋 Board", "📊 Scorecard", "🎯 Top Plays", "🔍 Market History", "📖 Guide"]
 if IS_ADMIN:
     tab_labels.append("📥 Import")
 _tabs = st.tabs(tab_labels)
-tab_board, tab_player, tab_scorecard, tab_top, tab_guide = _tabs[0], _tabs[1], _tabs[2], _tabs[3], _tabs[4]
+tab_board, tab_scorecard, tab_top, tab_player, tab_guide = _tabs[0], _tabs[1], _tabs[2], _tabs[3], _tabs[4]
 
 TIER_COLORS = {"Pass": "#8a7f70", "Lean": "#e6c14d",
                "Strong": "#4caf72", "Max": "#f0964a"}
@@ -408,7 +408,7 @@ with tab_board:
 
 # ============ PLAYER ============
 with tab_player:
-    st.subheader(f"{market_name} — Player Lookup")
+    st.subheader(f"{market_name} — Market History")
 
     pseason = st.selectbox("Season", module.available_seasons(),
                            index=len(module.available_seasons()) - 1,
