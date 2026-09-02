@@ -266,6 +266,11 @@ with tab_board:
         # rows with the key input present (line for yardage, odds for TD)
         key_input = "line" if not IS_PROB else "over_odds"
         graded = edited[edited[key_input].notna()].copy()
+        if "is_qb_model" in board.columns:
+            qb_flag_map = board.set_index("player_display_name")["is_qb_model"].to_dict()
+            graded["is_qb_model"] = graded["player_display_name"].map(qb_flag_map)
+        else:
+            graded["is_qb_model"] = False
 
         # sanity guard (yardage only; odds have their own valid ranges)
         if not IS_PROB and len(graded) > 0:
