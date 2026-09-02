@@ -9,10 +9,11 @@ from scipy.stats import norm
 # proportional: sigma = k * projection ; flat: fixed sigma.
 # anytime_td is intentionally absent — it's already a calibrated probability.
 SIGMA_RULES = {
-    "receiving":  {"type": "proportional", "k": 0.66},
-    "rushing":    {"type": "proportional", "k": 0.55},
-    "receptions": {"type": "flat", "sigma": 2.1},
-    "qb_passing": {"type": "flat", "sigma": 71.0},
+    "receiving":   {"type": "proportional", "k": 0.66},
+    "rushing":     {"type": "proportional", "k": 0.55},
+    "receptions":  {"type": "flat", "sigma": 2.1},
+    "qb_passing":  {"type": "flat", "sigma": 71.0},
+    "qb_rushing":  {"type": "proportional", "k": 0.77},
 }
 
 

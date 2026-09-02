@@ -60,7 +60,7 @@ MARKETS = {
     "Anytime TD": "anytime_td",
 }
 
-from models import receiving, receptions, rushing, qb_passing, anytime_td
+from models import receiving, receptions, rushing, qb_passing, anytime_td, qb_rushing
 MODULES = {
     "receiving": receiving,
     "receptions": receptions,
@@ -143,12 +143,19 @@ def render_html_table(df, cols, aligns):
             else:
                 if c == "Player":
                     style += "font-weight:600;"
+                    parts = str(val).split(" ", 1)
+                    first = parts[0]
+                    last = parts[1] if len(parts) > 1 else ""
                     team = r["team"] if "team" in r and pd.notna(r.get("team")) else ""
                     tag = (f'<span style="font-size:0.7rem;font-weight:700;color:#e0873a;'
                            f'background:#2a2318;border:1px solid #3a2f1e;border-radius:4px;'
                            f'padding:1px 5px;margin-left:6px;vertical-align:middle;">{team}</span>'
                            if team else "")
-                    cells += f'<td style="{style}">{val}{tag}</td>'
+                    qb_tag = (f'<span style="font-size:0.65rem;font-weight:600;color:#c0b090;'
+                              f'margin-left:5px;vertical-align:middle;">🏃 QB model</span>'
+                              if r.get("is_qb_model") else "")
+                    name_html = f'{first}<br>{last}{tag}{qb_tag}' if last else f'{first}{tag}{qb_tag}'
+                    cells += f'<td style="{style}">{name_html}</td>'
                 else:
                     cells += f'<td style="{style}">{val}</td>'
         rows += f'<tr style="background:{bg};">{cells}</tr>'
@@ -183,6 +190,14 @@ with tab_board:
                             help="Week within the season. Weeks 19+ are playoffs.")
 
     board = module.project_week(season, week)
+    if market_key == "rushing":
+        qb_board = qb_rushing.project_week(season, week)
+        if len(qb_board) > 0:
+            qb_board = qb_board.copy()
+            qb_board["is_qb_model"] = True
+            board = board.copy()
+            board["is_qb_model"] = False
+            board = pd.concat([board, qb_board], ignore_index=True)
 
     if len(board) == 0:
         st.warning("No projections available for that week yet.")
@@ -285,7 +300,8 @@ with tab_board:
                         "side": "OVER" if e > 0 else "—",
                         "tier": mc.tier_for_edge(e), "approx": False})
                 else:
-                    res = mc.edge_calc(market_key, r["projection"], r["line"],
+                    effective_market = "qb_rushing" if r.get("is_qb_model") else market_key
+                    res = mc.edge_calc(effective_market, r["projection"], r["line"],
                                        GAMES_PLAYED,
                                        over_odds=r.get("over_odds"),
                                        under_odds=r.get("under_odds"))
