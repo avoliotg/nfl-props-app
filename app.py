@@ -515,7 +515,7 @@ with tab_scorecard:
         st.dataframe(log[["logged_at", "season", "week", "player", "projection", "line",
                           "edge", "p_over", "side", "tier", "bet",
                           "result_yards", "outcome"]],
-                     use_container_width=True, hide_index=True)
+                     width='stretch', hide_index=True)
 
         gr = log[log["outcome"].isin(["WIN", "LOSS"])]
         if len(gr) > 0:
