@@ -270,20 +270,30 @@ def get_line_movement(season, week, market, user, sport="NFL"):
     df = pd.DataFrame(rows)
     df["player_norm"] = df["player"].apply(_norm_name)
 
+    def _side(row):
+        if pd.isna(row.get("projection")) or pd.isna(row.get("line")):
+            return ""
+        if row["projection"] > row["line"]:
+            return "OVER"
+        elif row["projection"] < row["line"]:
+            return "UNDER"
+        return "—"
+
     out = []
     for pname, grp in df.groupby("player_norm"):
         if len(grp) < 2:
-            continue  # need at least 2 snapshots to show movement
+            continue
         grp = grp.sort_values("captured_at")
         first = grp.iloc[0]
         last = grp.iloc[-1]
         out.append({
-            "player": first["player"],  # use original display name, not normalized
+            "player": first["player"],
             "snapshots": len(grp),
             "first_line": first.get("line"), "latest_line": last.get("line"),
             "line_move": (last.get("line") - first.get("line"))
                          if pd.notna(last.get("line")) and pd.notna(first.get("line")) else None,
-            "first_edge": first.get("edge"), "latest_edge": last.get("edge"),
+            "first_edge": first.get("edge"), "first_side": _side(first),
+            "latest_edge": last.get("edge"), "latest_side": _side(last),
             "first_captured": first.get("captured_at"), "latest_captured": last.get("captured_at"),
         })
     return pd.DataFrame(out)
