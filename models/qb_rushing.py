@@ -152,6 +152,15 @@ def build_upcoming_week(season, week):
         columns={"gsis_id": "player_id"})
     ros = ros.dropna(subset=["player_id"]).drop_duplicates(subset=["player_id"])
 
+        # depth chart → each team's current QB1 (most recent snapshot); keep only starters
+    dc = nfl.load_depth_charts([season])
+    dc = dc.to_pandas() if hasattr(dc, "to_pandas") else dc
+    dc = dc[dc["pos_abb"] == "QB"].copy()
+    latest_dt = dc["dt"].max()
+    dc = dc[dc["dt"] == latest_dt]
+    starters = dc[dc["pos_rank"] == 1][["gsis_id"]].rename(columns={"gsis_id": "player_id"})
+    ros = ros.merge(starters, on="player_id", how="inner")
+
     qb = build_dataset()
     prior = qb[qb["season"] == season - 1].sort_values(["player_id", "week"])
 
