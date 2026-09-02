@@ -565,6 +565,12 @@ with tab_top:
             st.warning(f"No {min_tier}+ plays saved for {tseason} Week {tweek}.")
         else:
             def render_top(df):
+                df = df.copy()
+                df["logged_disp"] = pd.to_datetime(
+                    df["logged_at"], errors="coerce"
+                ).dt.strftime("%m/%d %I:%M%p")
+                df["logged_disp"] = df["logged_disp"].fillna("—")
+
                 rows = ""
                 for i, r in df.iterrows():
                     bg = "#1e1912" if i % 2 == 0 else "#2a2318"
@@ -583,9 +589,10 @@ with tab_top:
                       <td style="padding:9px 12px;text-align:right;">{line_disp}</td>
                       <td style="padding:9px 12px;font-weight:700;color:{side_c};">{r['side']}</td>
                       <td style="padding:9px 12px;text-align:center;">{bet_mark}</td>
+                      <td style="padding:9px 12px;text-align:right;color:#8a7f70;font-size:0.8rem;">{r['logged_disp']}</td>
                     </tr>"""
-                heads = ["Tier", "Edge", "Player", "Market", "Proj", "Line", "Side", "Bet"]
-                aligns = ["left", "right", "left", "left", "right", "right", "left", "center"]
+                heads = ["Tier", "Edge", "Player", "Market", "Proj", "Line", "Side", "Bet", "Logged"]
+                aligns = ["left", "right", "left", "left", "right", "right", "left", "center", "right"]
                 header = "".join(
                     f'<th style="padding:11px 12px;text-align:{a};background:#e0873a;'
                     f'color:#161310;font-weight:800;font-size:0.8rem;text-transform:uppercase;'
