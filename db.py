@@ -108,10 +108,7 @@ def import_lines(rows, season, week, user, sport="NFL"):
     }
     GAMES_PLAYED = 0  # TODO: same placeholder as the Board; keep in sync
 
-    if user and isinstance(user, dict) and user.get("access_token") and user.get("refresh_token"):
-        client = get_user_client(user["access_token"], user["refresh_token"])
-    else:
-        client = get_authed_client(user)
+    client = get_authed_client(user)
 
     captured_at = datetime.now(timezone.utc).isoformat()
     imported = 0
@@ -151,10 +148,8 @@ def import_lines(rows, season, week, user, sport="NFL"):
         projection = None
         edge = None
         board = _get_board(mkt)
-        print(f"DEBUG: player={player!r} mkt={mkt!r} board_rows={len(board)}")
         if len(board) > 0:
             match = board[board["player_display_name"] == player]
-            print(f"DEBUG: match_rows={len(match)}")
             if len(match) > 0:
                 row = match.iloc[0]
                 projection = float(row["projection"])
