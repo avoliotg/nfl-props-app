@@ -627,6 +627,13 @@ with tab_movement:
         lm_week = st.selectbox("Week", lm_weeks, index=len(lm_weeks) - 1, key="lm_week")
 
     movement = db.get_line_movement(lm_season, lm_week, market_key, st.session_state.user)
+    if len(movement) > 0:
+        movement["first_captured"] = pd.to_datetime(
+            movement["first_captured"], errors="coerce", utc=True
+        ).dt.strftime("%m/%d %I:%M%p")
+        movement["latest_captured"] = pd.to_datetime(
+            movement["latest_captured"], errors="coerce", utc=True
+        ).dt.strftime("%m/%d %I:%M%p")
 
     if len(movement) == 0:
         st.info("No players with multiple snapshots yet for this market/week. "
