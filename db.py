@@ -248,3 +248,42 @@ def sign_in(email, password):
         return None, "Login failed — check your email and password."
     except Exception as e:
         return None, f"Login error: {e}"
+
+def get_line_movement(season, week, market, user, sport="NFL"):
+    """For a market/week, return a DataFrame with one row per player who has
+    2+ captured snapshots: first line/projection/edge vs. latest, and the
+    movement between them. Players with only 1 snapshot are excluded (nothing
+    to compare yet)."""
+    client = get_authed_client(user)
+    try:
+        resp = (client.table("lines").select("*")
+                .eq("sport", sport).eq("season", int(season))
+                .eq("week", int(week)).eq("market", market)
+                .order("captured_at", desc=False).execute())
+        rows = resp.data
+    except Exception:
+        rows = []
+
+    if not rows:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(rows)
+    df["player_norm"] = df["player"].apply(_norm_name)
+
+    out = []
+    for pname, grp in df.groupby("player_norm"):
+        if len(grp) < 2:
+            continue  # need at least 2 snapshots to show movement
+        grp = grp.sort_values("captured_at")
+        first = grp.iloc[0]
+        last = grp.iloc[-1]
+        out.append({
+            "player": first["player"],  # use original display name, not normalized
+            "snapshots": len(grp),
+            "first_line": first.get("line"), "latest_line": last.get("line"),
+            "line_move": (last.get("line") - first.get("line"))
+                         if pd.notna(last.get("line")) and pd.notna(first.get("line")) else None,
+            "first_edge": first.get("edge"), "latest_edge": last.get("edge"),
+            "first_captured": first.get("captured_at"), "latest_captured": last.get("captured_at"),
+        })
+    return pd.DataFrame(out)
