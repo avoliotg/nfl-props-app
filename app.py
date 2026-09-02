@@ -511,8 +511,13 @@ with tab_scorecard:
         st.dataframe(by_tier.rename("Count").reset_index().rename(columns={"index": "Tier"}),
                      width='stretch', hide_index=True)
 
+        log_display = log.copy()
+        log_display["logged_at"] = pd.to_datetime(
+            log_display["logged_at"], errors="coerce", utc=True
+        ).dt.strftime("%m/%d %I:%M%p")
+
         st.markdown("#### All logged picks")
-        st.dataframe(log[["logged_at", "season", "week", "player", "projection", "line",
+        st.dataframe(log_display[["logged_at", "season", "week", "player", "projection", "line",
                           "edge", "p_over", "side", "tier", "bet",
                           "result_yards", "outcome"]],
                      width='stretch', hide_index=True)
