@@ -15,11 +15,38 @@ def get_user_client(access_token, refresh_token):
     """Build a Supabase client carrying a specific user's session, so its
     queries run AS that authenticated user (making auth.uid() resolve at the DB).
     Rebuilt per rerun from tokens stored in session_state. NOT cached — caching
-    would leak one user's session across users."""
+    would leak one user's session across users.
+    Returns (client, fresh_access_token, fresh_refresh_token) — if Supabase
+    rotated the refresh token internally, the caller MUST persist the fresh
+    ones back to session_state or subsequent calls will fail."""
     url = st.secrets["SUPABASE_URL"]
     key = st.secrets["SUPABASE_KEY"]
     client = create_client(url, key)
-    client.auth.set_session(access_token, refresh_token)
+    try:
+        client.auth.set_session(access_token, refresh_token)
+    except Exception:
+        # refresh token already used/invalid — session is dead, caller must re-login
+        return client, None, None
+    session = client.auth.get_session()
+    if session:
+        return client, session.access_token, session.refresh_token
+    return client, access_token, refresh_token
+
+def get_authed_client(user):
+    """Given the session_state user dict, return an authenticated client,
+    refreshing and persisting tokens back into `user` (in place) if Supabase
+    rotated them. Falls back to the anon client if no valid tokens exist."""
+    if not (user and isinstance(user, dict) and user.get("access_token") and user.get("refresh_token")):
+        return get_client()
+    client, fresh_access, fresh_refresh = get_user_client(user["access_token"], user["refresh_token"])
+    if fresh_access is None:
+        # session dead (refresh token already used/invalid) — degrade to anon;
+        # user needs to log out and back in to restore authenticated access
+        return get_client()
+    if fresh_access != user["access_token"]:
+        user["access_token"] = fresh_access
+        user["refresh_token"] = fresh_refresh
+        st.session_state.user = user  # persist the rotation so future calls use fresh tokens
     return client
 
 
@@ -163,10 +190,7 @@ def get_lines(season, week, market, user, sport="NFL"):
     {player_name: {'line':..., 'over_odds':..., 'under_odds':...}}.
     Returns the MOST RECENT snapshot per player. Uses the authenticated user's
     client so RLS (read-for-authenticated) resolves correctly."""
-    if user and isinstance(user, dict) and user.get("access_token") and user.get("refresh_token"):
-        client = get_user_client(user["access_token"], user["refresh_token"])
-    else:
-        client = get_client()
+    client = get_authed_client(user)
     try:
         resp = (client.table("lines").select("*")
                 .eq("sport", sport).eq("season", int(season))
