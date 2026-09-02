@@ -91,11 +91,11 @@ else:
     PROJ_LABEL = "Proj Yds"
 st.divider()
 
-tab_labels = ["📋 Board", "📊 Scorecard", "🎯 Top Plays", "🔍 Market History", "📖 Guide"]
+tab_labels = ["📋 Board", "📊 Scorecard", "🎯 Top Plays", "🔍 Market History", "📈 Line Movement", "📖 Guide"]
 if IS_ADMIN:
     tab_labels.append("📥 Import")
 _tabs = st.tabs(tab_labels)
-tab_board, tab_scorecard, tab_top, tab_player, tab_guide = _tabs[0], _tabs[1], _tabs[2], _tabs[3], _tabs[4]
+tab_board, tab_scorecard, tab_top, tab_player, tab_movement, tab_guide = _tabs[0], _tabs[1], _tabs[2], _tabs[3], _tabs[4], _tabs[5]
 
 TIER_COLORS = {"Pass": "#8a7f70", "Lean": "#e6c14d",
                "Strong": "#4caf72", "Max": "#f0964a"}
@@ -609,6 +609,37 @@ with tab_top:
             st.caption("Ranked by tier then edge. Edge (model probability minus the "
                        "vig-adjusted breakeven, in points) is the same unit across all "
                        "markets, so plays are directly comparable.")
+
+# ============ LINE MOVEMENT ============
+with tab_movement:
+    st.subheader("📈 Line Movement")
+    st.caption("Compares your earliest captured line for each player to your most recent "
+               "one. Meaningful once you've captured a player's line more than once "
+               "(e.g. an early-week snapshot and a Sunday-morning one). Early in the "
+               "season, most players will show only 1 snapshot — that's expected.")
+
+    lm1, lm2 = st.columns(2)
+    with lm1:
+        lm_season = st.selectbox("Season", module.available_seasons(),
+                                 index=len(module.available_seasons()) - 1, key="lm_season")
+    with lm2:
+        lm_weeks = module.available_weeks(lm_season)
+        lm_week = st.selectbox("Week", lm_weeks, index=len(lm_weeks) - 1, key="lm_week")
+
+    movement = db.get_line_movement(lm_season, lm_week, market_key, st.session_state.user)
+
+    if len(movement) == 0:
+        st.info("No players with multiple snapshots yet for this market/week. "
+                "Capture the same player's line more than once (e.g. early-week "
+                "and closer to kickoff) to see movement here.")
+    else:
+        st.markdown(f"**{len(movement)}** player(s) with 2+ snapshots tracked.")
+        show_cols = ["player", "snapshots", "first_line", "latest_line", "line_move",
+                     "first_edge", "latest_edge", "first_captured", "latest_captured"]
+        show_cols = [c for c in show_cols if c in movement.columns]
+        st.dataframe(movement[show_cols].sort_values("snapshots", ascending=False),
+                     width='stretch', hide_index=True)
+            
                        # ============ GUIDE ============
 with tab_guide:
     st.subheader("📖 OpalScales Guide")
@@ -742,7 +773,7 @@ actually working.
 """)
     # ============ IMPORT ============
 if IS_ADMIN:
-    with _tabs[5]:
+    with _tabs[6]:
         st.subheader("📥 Import Lines from CSV")
         st.caption("Paste CSV from the extraction prompt. Columns: "
                    "player, market, line, over_odds, under_odds. "
