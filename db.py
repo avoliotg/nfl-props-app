@@ -1,6 +1,7 @@
 """Database connection + helpers for OpalScales (Supabase)."""
 import streamlit as st
 from supabase import create_client
+import pandas as pd
 
 
 @st.cache_resource
@@ -31,7 +32,7 @@ def test_connection():
         return True, f"Connected! ({len(resp.data)} rows)"
     except Exception as e:
         return False, f"Connection failed: {e} | URL used: {st.secrets['SUPABASE_URL']}"
-    import pandas as pd
+    
 
 # Map various CSV market names -> the app's internal market keys
 MARKET_MAP = {
@@ -67,40 +68,90 @@ def _normalize_market(raw):
 def import_lines(rows, season, week, user, sport="NFL"):
     """Append a batch of imported lines as a NEW timestamped snapshot into 'lines'.
     Each import adds rows (never overwrites) so line movement is preserved for CLV.
-    Uses the admin's authenticated client so RLS (write-for-admin-only) resolves.
-    rows: list of dicts with keys player, market, line, over_odds, under_odds.
-    Returns a summary dict: imported count, per-market counts, and any problems.
+    Also computes and stores the model's projection + edge AT IMPORT TIME, so the
+    historical record reflects what the model actually said at that moment.
     """
     from datetime import datetime, timezone
+    import mc
+    from models import receiving, receptions, rushing, qb_passing, anytime_td, qb_rushing
+
+    MODULE_MAP = {
+        "receiving": receiving, "receptions": receptions, "rushing": rushing,
+        "qb_passing": qb_passing, "anytime_td": anytime_td,
+    }
+    GAMES_PLAYED = 0  # TODO: same placeholder as the Board; keep in sync
+
     if user and isinstance(user, dict) and user.get("access_token") and user.get("refresh_token"):
         client = get_user_client(user["access_token"], user["refresh_token"])
     else:
         client = get_client()
+
     captured_at = datetime.now(timezone.utc).isoformat()
     imported = 0
     by_market = {}
     bad_market = []
+
+    boards_cache = {}
+    def _get_board(mkt):
+        if mkt not in boards_cache:
+            module = MODULE_MAP.get(mkt)
+            board = module.project_week(season, week) if module else pd.DataFrame()
+            if mkt == "rushing":
+                qb_board = qb_rushing.project_week(season, week)
+                if len(qb_board) > 0:
+                    qb_board = qb_board.copy()
+                    qb_board["is_qb_model"] = True
+                    board = board.copy()
+                    board["is_qb_model"] = False
+                    board = pd.concat([board, qb_board], ignore_index=True)
+            boards_cache[mkt] = board
+        return boards_cache[mkt]
+
     for r in rows:
         mkt = _normalize_market(r.get("market"))
         if mkt is None:
             bad_market.append(r.get("market"))
             continue
-        record = {
-            "sport": sport,
-            "season": int(season),
-            "week": int(week),
-            "market": mkt,
-            "player": str(r.get("player", "")).strip(),
-            "line": _to_num(r.get("line")),
-            "over_odds": _to_num(r.get("over_odds")),
-            "under_odds": _to_num(r.get("under_odds")),
-            "captured_at": captured_at,
-        }
-        if not record["player"]:
+
+        player = str(r.get("player", "")).strip()
+        if not player:
             continue
+
+        line_val = _to_num(r.get("line"))
+        over_odds = _to_num(r.get("over_odds"))
+        under_odds = _to_num(r.get("under_odds"))
+
+        projection = None
+        edge = None
+        board = _get_board(mkt)
+        if len(board) > 0:
+            match = board[board["player_display_name"] == player]
+            if len(match) > 0:
+                row = match.iloc[0]
+                projection = float(row["projection"])
+                if mkt == "anytime_td":
+                    if over_odds is not None:
+                        implied = anytime_td.american_to_prob(over_odds)
+                        if implied is not None:
+                            edge = round(projection - implied, 1)
+                elif line_val is not None:
+                    effective_mkt = "qb_rushing" if row.get("is_qb_model") else mkt
+                    res = mc.edge_calc(effective_mkt, projection, line_val, GAMES_PLAYED,
+                                       over_odds=over_odds, under_odds=under_odds)
+                    if res:
+                        edge = res["best_edge"]
+
+        record = {
+            "sport": sport, "season": int(season), "week": int(week), "market": mkt,
+            "player": player, "line": line_val,
+            "over_odds": over_odds, "under_odds": under_odds,
+            "captured_at": captured_at,
+            "projection": projection, "edge": edge,
+        }
         client.table("lines").insert(record).execute()
         imported += 1
         by_market[mkt] = by_market.get(mkt, 0) + 1
+
     return {"imported": imported, "by_market": by_market,
             "bad_market": [m for m in bad_market if m]}
 
