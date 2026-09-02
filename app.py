@@ -215,7 +215,7 @@ with tab_board:
 
         board = board.copy()
         # pre-fill inputs from the imported lines pool (if any)
-        pool = db.get_lines(season, week, market_key)
+        pool = db.get_lines(season, week, market_key, st.session_state.user)
 
         def _prefill_field(player_name, field):
             entry = pool.get(player_name)

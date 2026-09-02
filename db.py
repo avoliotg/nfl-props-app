@@ -101,12 +101,15 @@ def import_lines(rows, season, week, sport="NFL"):
             "bad_market": [m for m in bad_market if m]}
 
 
-def get_lines(season, week, market, sport="NFL"):
+def get_lines(season, week, market, user, sport="NFL"):
     """Fetch the pool of imported lines for a given market/week as a dict
     {player_name: {'line':..., 'over_odds':..., 'under_odds':...}}.
-    Returns the MOST RECENT snapshot per player (movement history is preserved
-    in the table; the Board shows the latest)."""
-    client = get_client()
+    Returns the MOST RECENT snapshot per player. Uses the authenticated user's
+    client so RLS (read-for-authenticated) resolves correctly."""
+    if user and isinstance(user, dict) and user.get("access_token") and user.get("refresh_token"):
+        client = get_user_client(user["access_token"], user["refresh_token"])
+    else:
+        client = get_client()
     try:
         resp = (client.table("lines").select("*")
                 .eq("sport", sport).eq("season", int(season))
