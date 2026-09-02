@@ -123,7 +123,8 @@ def get_lines(season, week, market, user, sport="NFL"):
         for r in resp.data:
             out[r["player"]] = {"line": r.get("line"),
                                 "over_odds": r.get("over_odds"),
-                                "under_odds": r.get("under_odds")}
+                                "under_odds": r.get("under_odds"),
+                                "captured_at": r.get("captured_at")}
         return out
     except Exception:
         return {}

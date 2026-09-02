@@ -110,6 +110,7 @@ HEADER_HELP = {
     "Edge": "Model probability minus the vig-adjusted breakeven, in points. Positive = value.",
     "Side": "Which side the edge favors (— means no positive-edge side = pass).",
     "Tier": "Pass / Lean / Strong / Max — bigger edge = stronger.",
+    "Captured": "When this line was imported.",
 }
 
 
@@ -251,6 +252,8 @@ with tab_board:
                 lambda p: _prefill_field(p, "over_odds"))
             board["under_odds"] = board["player_display_name"].apply(
                 lambda p: _prefill_field(p, "under_odds"))
+            board["captured_at"] = board["player_display_name"].apply(
+                lambda p: _prefill_field(p, "captured_at"))
             colcfg["line"] = st.column_config.NumberColumn("Line ✏️", format="%.1f", width="small")
             colcfg["over_odds"] = st.column_config.NumberColumn("Over ✏️", format="%.0f", width="small")
             colcfg["under_odds"] = st.column_config.NumberColumn("Under ✏️", format="%.0f", width="small")
@@ -271,6 +274,11 @@ with tab_board:
             graded["is_qb_model"] = graded["player_display_name"].map(qb_flag_map)
         else:
             graded["is_qb_model"] = False
+        if "captured_at" in board.columns:
+            cap_map = board.set_index("player_display_name")["captured_at"].to_dict()
+            graded["captured_at"] = graded["player_display_name"].map(cap_map)
+        else:
+            graded["captured_at"] = None
 
         # sanity guard (yardage only; odds have their own valid ranges)
         if not IS_PROB and len(graded) > 0:
@@ -326,18 +334,24 @@ with tab_board:
             graded = graded[graded["edge"].notna()].copy()
             graded = graded.sort_values("edge", ascending=False).reset_index(drop=True)
 
+            # format the import timestamp for display (compact, human-readable)
+            graded["captured_display"] = pd.to_datetime(
+                graded["captured_at"], errors="coerce", utc=True
+            ).dt.strftime("%m/%d %I:%M%p")
+            graded["captured_display"] = graded["captured_display"].fillna("—")
+
             if IS_PROB:
                 show = graded.rename(columns={
                     "player_display_name": "Player", "projection": "Model %",
                     "over_odds": "Odds", "p_over": "P(over)%", "edge": "Edge",
-                    "side": "Side", "tier": "Tier"})
-                cols = ["Player", "Model %", "Odds", "Edge", "Side", "Tier"]
+                    "side": "Side", "tier": "Tier", "captured_display": "Captured"})
+                cols = ["Player", "Model %", "Odds", "Edge", "Side", "Tier", "Captured"]
             else:
                 show = graded.rename(columns={
                     "player_display_name": "Player", "projection": "Proj",
                     "line": "Line", "p_over": "P(over)%", "edge": "Edge",
-                    "side": "Side", "tier": "Tier"})
-                cols = ["Player", "Proj", "Line", "P(over)%", "Edge", "Side", "Tier"]
+                    "side": "Side", "tier": "Tier", "captured_display": "Captured"})
+                cols = ["Player", "Proj", "Line", "P(over)%", "Edge", "Side", "Tier", "Captured"]
             aligns = ["left"] * len(cols)
 
             # summary stats (market-agnostic: edge/tier mean the same everywhere)
@@ -357,7 +371,8 @@ with tab_board:
                            "(edge is approximate).")
             st.markdown(render_html_table(show, cols, aligns), unsafe_allow_html=True)
             st.caption("Hover any column header (ⓘ) for what it means. "
-                       "Edge = model probability minus the vig-adjusted breakeven, in points.")
+                       "Edge = model probability minus the vig-adjusted breakeven, in points. "
+                       "Captured = when that line was imported.")
 
             # ---- save to log ----
             save_cols = ["player_display_name", "projection", "line",
@@ -496,10 +511,10 @@ with tab_scorecard:
                      width='stretch', hide_index=True)
 
         st.markdown("#### All logged picks")
-        st.dataframe(log[["season", "week", "player", "projection", "line",
+        st.dataframe(log[["logged_at", "season", "week", "player", "projection", "line",
                           "edge", "p_over", "side", "tier", "bet",
                           "result_yards", "outcome"]],
-                     width='stretch', hide_index=True)
+                     use_container_width=True, hide_index=True)
 
         gr = log[log["outcome"].isin(["WIN", "LOSS"])]
         if len(gr) > 0:
