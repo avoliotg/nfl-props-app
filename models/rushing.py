@@ -18,7 +18,7 @@ GAP_ANCHORS = [(0, 0.49), (3, 0.55), (7, 0.61), (15, 0.68), (30, 0.70)]
 @st.cache_data(show_spinner="Pulling & preparing NFL data (first run only)...")
 def build_dataset():
     ps = data_utils.load_player_stats(SEASONS)
-    rush = ps[ps["carries"].fillna(0) >= 5].copy()
+    rush = ps[(ps["carries"].fillna(0) >= 5) & (ps["position"] == "RB")].copy()
     rush = rush.sort_values(["player_id", "season", "week"]).reset_index(drop=True)
 
     rush["carries_roll"] = (rush.groupby("player_id")["carries"]
@@ -86,7 +86,7 @@ def build_upcoming_week(season, week):
 
     ros = nfl.load_rosters([season])
     ros = ros.to_pandas() if hasattr(ros, "to_pandas") else ros
-    ros = ros[ros["position"].isin(["RB", "QB", "WR"])]
+    ros = ros[ros["position"].isin(["RB"])]
     ros = ros[["gsis_id", "full_name", "team", "position"]].rename(
         columns={"gsis_id": "player_id"})
     ros = ros.dropna(subset=["player_id"]).drop_duplicates(subset=["player_id"])

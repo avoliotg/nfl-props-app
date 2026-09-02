@@ -154,7 +154,7 @@ def render_html_table(df, cols, aligns):
                     qb_tag = (f'<span style="font-size:0.65rem;font-weight:600;color:#c0b090;'
                               f'margin-left:5px;vertical-align:middle;">🏃 QB model</span>'
                               if r.get("is_qb_model") else "")
-                    name_html = f'{first}<br>{last}{tag}{qb_tag}' if last else f'{first}{tag}{qb_tag}'
+                    name_html = f'{first}<br>{last} {tag} {qb_tag}' if last else f'{first} {tag} {qb_tag}'
                     cells += f'<td style="{style}">{name_html}</td>'
                 else:
                     cells += f'<td style="{style}">{val}</td>'
