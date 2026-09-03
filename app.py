@@ -662,6 +662,8 @@ with tab_movement:
             "Snaps": mv["snapshots"],
             "Bet?": False,
         })
+        for numcol in ["Proj", "Edge", f"First {line_word}", f"Latest {line_word}", "Move"]:
+            grid[numcol] = pd.to_numeric(grid[numcol], errors="coerce")
 
         edited = st.data_editor(
             grid, width='stretch', hide_index=True,
