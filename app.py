@@ -627,9 +627,9 @@ def render_movement_section(df, market_name_label, is_td_market):
     df = df.sort_values("abs_move", ascending=False)
 
     line_label = "Prob%" if is_td_market else "Line"
-    heads = ["Player", "Tier", "Latest Edge", "First → Latest " + line_label,
+    heads = ["Player", "Tier", "Proj", "Latest Edge", "Side", "First → Latest " + line_label,
              "Move", "vs. Model", "First Edge", "Snaps", "First Cap.", "Latest Cap."]
-    aligns = ["left", "left", "right", "right", "right", "center", "right", "center", "right", "right"]
+    aligns = ["left", "left", "right", "right", "left", "right", "right", "center", "right", "center", "right", "right"]
 
     rows = ""
     for i, r in df.iterrows():
@@ -645,11 +645,17 @@ def render_movement_section(df, market_name_label, is_td_market):
         latest_edge_disp = f"{latest_edge_v:+.1f}" if pd.notna(latest_edge_v) else "—"
         first_edge_v = r.get("first_edge")
         first_edge_disp = f"{first_edge_v:+.1f}" if pd.notna(first_edge_v) else "—"
+        proj_v = r.get("raw_projection")
+        proj_disp = f"{proj_v:.1f}" if pd.notna(proj_v) else "—"
+        side_disp = r.get("latest_side") or "—"
+        side_c = "#4caf72" if side_disp == "OVER" else "#e0655a" if side_disp == "UNDER" else "#c0b090"
 
         rows += f"""<tr style="background:{bg};">
           <td style="padding:9px 12px;font-weight:600;">{r['player']}</td>
           <td style="padding:9px 12px;font-weight:800;text-transform:uppercase;color:{tier_c};">{r['latest_tier'] or '—'}</td>
+          <td style="padding:9px 12px;text-align:right;">{proj_disp}</td>
           <td style="padding:9px 12px;text-align:right;font-weight:700;">{latest_edge_disp}</td>
+          <td style="padding:9px 12px;font-weight:700;color:{side_c};">{side_disp}</td>
           <td style="padding:9px 12px;text-align:right;color:#c0b090;">{first_l} → {latest_l}</td>
           <td style="padding:9px 12px;text-align:right;font-weight:700;">{move_disp}</td>
           <td style="padding:9px 12px;text-align:center;">{ta_disp}</td>
