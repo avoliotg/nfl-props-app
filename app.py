@@ -691,9 +691,44 @@ with tab_movement:
         st.markdown(f"#### {mkt_key}")
         mv = db.get_line_movement(lm_season, lm_week, mkt_label, st.session_state.user)
         if len(mv) > 0:
-            mv["first_captured"] = pd.to_datetime(mv["first_captured"], errors="coerce", utc=True).dt.strftime("%m/%d %I:%M%p")
-            mv["latest_captured"] = pd.to_datetime(mv["latest_captured"], errors="coerce", utc=True).dt.strftime("%m/%d %I:%M%p")
-        render_movement_section(mv, mkt_key, is_td_market=(mkt_label == "anytime_td"))
+            mv_display = mv.copy()
+            mv_display["first_captured"] = pd.to_datetime(mv_display["first_captured"], errors="coerce", utc=True).dt.strftime("%m/%d %I:%M%p")
+            mv_display["latest_captured"] = pd.to_datetime(mv_display["latest_captured"], errors="coerce", utc=True).dt.strftime("%m/%d %I:%M%p")
+            render_movement_section(mv_display, mkt_key, is_td_market=(mkt_label == "anytime_td"))
+
+            savable = mv[mv["latest_edge"].notna()].copy()
+            if len(savable) > 0:
+                save_grid = pd.DataFrame({
+                    "player": savable["player"],
+                    "projection": savable["raw_projection"],
+                    "line": savable["raw_line"],
+                    "over_odds": savable["raw_over_odds"],
+                    "under_odds": savable["raw_under_odds"],
+                    "edge": savable["latest_edge"],
+                    "p_over": None,
+                    "side": savable["latest_side"] if mkt_label != "anytime_td" else "",
+                    "tier": savable["latest_tier"],
+                    "bet": False,
+                })
+                with st.expander(f"💾 Save {mkt_key} picks from this view"):
+                    edited_save = st.data_editor(
+                        save_grid, width='stretch', hide_index=True,
+                        disabled=[c for c in save_grid.columns if c != "bet"],
+                        column_config={"bet": st.column_config.CheckboxColumn("Bet?", width="small")},
+                        key=f"movement_save_{mkt_label}")
+                    if st.button(f"Save {mkt_key} to Log", key=f"movement_save_btn_{mkt_label}"):
+                        entries = edited_save.copy()
+                        entries["logged_at"] = betlog.now_stamp()
+                        entries["market"] = mkt_label
+                        entries["season"] = lm_season
+                        entries["week"] = lm_week
+                        entries["result_yards"] = None
+                        entries["outcome"] = None
+                        entries = entries[betlog.COLUMNS]
+                        betlog.append_entries(entries, st.session_state.user)
+                        st.success(f"Saved {len(entries)} {mkt_key} pick(s) to the log.")
+        else:
+            render_movement_section(mv, mkt_key, is_td_market=(mkt_label == "anytime_td"))
             
                        # ============ GUIDE ============
 with tab_guide:
