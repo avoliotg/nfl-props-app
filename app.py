@@ -719,10 +719,10 @@ with tab_movement:
                 with st.expander(f"💾 Save {mkt_key} picks from this view"):
                     edited_save = st.data_editor(
                         save_grid, width='stretch', hide_index=True,
+                        column_order=["player", "edge", "tier", "bet"],
                         disabled=[c for c in save_grid.columns if c != "bet"],
                         column_config={"bet": st.column_config.CheckboxColumn("Bet?", width="small")},
                         key=f"movement_save_{mkt_label}")
-                    if st.button(f"Save {mkt_key} to Log", key=f"movement_save_btn_{mkt_label}"):
                         entries = edited_save.copy()
                         entries["logged_at"] = betlog.now_stamp()
                         entries["market"] = mkt_label
