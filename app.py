@@ -647,8 +647,8 @@ with tab_movement:
     else:
         st.markdown(f"**{len(movement)}** player(s) with 2+ snapshots tracked.")
         show_cols = ["player", "snapshots", "first_line", "latest_line", "line_move",
-                     "first_edge", "first_side", "latest_edge", "latest_side",
-                     "first_captured", "latest_captured"]
+                     "first_edge", "first_side", "latest_edge", "latest_side", "latest_tier",
+                     "toward_away", "first_captured", "latest_captured"]
         show_cols = [c for c in show_cols if c in movement.columns]
         st.dataframe(movement[show_cols].sort_values("snapshots", ascending=False),
                      width='stretch', hide_index=True)
