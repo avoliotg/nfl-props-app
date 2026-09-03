@@ -251,11 +251,13 @@ def sign_in(email, password):
 
 def get_line_movement(season, week, market, user, sport="NFL"):
     """For a market/week, return a DataFrame with one row per player who has
-    2+ captured snapshots: first vs. latest line/projection/edge and the
-    movement between them. TD (odds-only, no line) compares IMPLIED PROBABILITY
-    instead of raw odds, since odds aren't linear. Players with only 1
-    snapshot are excluded (nothing to compare yet)."""
+    2+ captured snapshots: first vs. latest line/projection/edge, the movement
+    between them, the latest tier, and whether the line moved TOWARD or AWAY
+    from the model's original (first-snapshot) read. TD (odds-only, no line)
+    compares IMPLIED PROBABILITY instead of raw odds, since odds aren't linear.
+    Players with only 1 snapshot are excluded (nothing to compare yet)."""
     from models import anytime_td
+    import mc
 
     client = get_authed_client(user)
     try:
@@ -269,7 +271,6 @@ def get_line_movement(season, week, market, user, sport="NFL"):
 
     if not rows:
         return pd.DataFrame()
-    print("DEBUG TD raw row sample:", rows[0])
 
     df = pd.DataFrame(rows)
     df["player_norm"] = df["player"].apply(_norm_name)
@@ -284,6 +285,18 @@ def get_line_movement(season, week, market, user, sport="NFL"):
             return "UNDER"
         return "—"
 
+    def _toward_away(first_side, move):
+        """Did the line move toward or away from the model's ORIGINAL read?"""
+        if not first_side or move is None or pd.isna(move):
+            return ""
+        if first_side == "OVER" and move > 0:
+            return "toward"
+        if first_side == "UNDER" and move < 0:
+            return "toward"
+        if move == 0:
+            return "flat"
+        return "away"
+
     out = []
     for pname, grp in df.groupby("player_norm"):
         if len(grp) < 2:
@@ -292,26 +305,36 @@ def get_line_movement(season, week, market, user, sport="NFL"):
         first = grp.iloc[0]
         last = grp.iloc[-1]
 
+        latest_edge = last.get("edge")
+        latest_tier = mc.tier_for_edge(latest_edge) if latest_edge is not None else ""
+
         if is_td:
             first_implied = anytime_td.american_to_prob(first.get("over_odds"))
             latest_implied = anytime_td.american_to_prob(last.get("over_odds"))
             move = (latest_implied - first_implied) if (first_implied is not None and latest_implied is not None) else None
+            # for TD, "side" is really "model likes YES more/less than market" — approximate
+            # using projection vs implied% as the directional read
+            first_proj = first.get("projection")
+            first_side = ""
+            if first_proj is not None and first_implied is not None:
+                first_side = "OVER" if first_proj > first_implied else "UNDER" if first_proj < first_implied else "—"
             out.append({
                 "player": first["player"], "snapshots": len(grp),
                 "first_line": first_implied, "latest_line": latest_implied,
-                "line_move": move,
-                "first_edge": first.get("edge"), "first_side": "",
-                "latest_edge": last.get("edge"), "latest_side": "",
+                "line_move": move, "toward_away": _toward_away(first_side, move),
+                "first_edge": first.get("edge"), "first_side": first_side,
+                "latest_edge": latest_edge, "latest_side": "", "latest_tier": latest_tier,
                 "first_captured": first.get("captured_at"), "latest_captured": last.get("captured_at"),
             })
         else:
+            first_side = _side(first)
+            move = (last.get("line") - first.get("line")) if pd.notna(last.get("line")) and pd.notna(first.get("line")) else None
             out.append({
                 "player": first["player"], "snapshots": len(grp),
                 "first_line": first.get("line"), "latest_line": last.get("line"),
-                "line_move": (last.get("line") - first.get("line"))
-                             if pd.notna(last.get("line")) and pd.notna(first.get("line")) else None,
-                "first_edge": first.get("edge"), "first_side": _side(first),
-                "latest_edge": last.get("edge"), "latest_side": _side(last),
+                "line_move": move, "toward_away": _toward_away(first_side, move),
+                "first_edge": first.get("edge"), "first_side": first_side,
+                "latest_edge": latest_edge, "latest_side": _side(last), "latest_tier": latest_tier,
                 "first_captured": first.get("captured_at"), "latest_captured": last.get("captured_at"),
             })
     return pd.DataFrame(out)
