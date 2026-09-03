@@ -324,7 +324,7 @@ def get_line_movement(season, week, market, user, sport="NFL"):
             first_side = _td_side(first.get("projection"), first_implied)
             latest_side = _td_side(last.get("projection"), latest_implied)
             if first["player"] in ("Sam Darnold", "Josh Allen"):
-                print(f"DEBUG TD: {first['player']!r} | first_proj={first.get('projection')} first_implied={first_implied} first_side={first_side!r} | latest_proj={last.get('projection')} latest_implied={latest_implied} latest_side={latest_side!r} | move={move} | resolved_side={first_side or latest_side!r}")
+                st.write(f"DEBUG TD: {first['player']!r} | first_proj={first.get('projection')} first_implied={first_implied} first_side={first_side!r} | latest_proj={last.get('projection')} latest_implied={latest_implied} latest_side={latest_side!r} | move={move} | resolved_side={first_side or latest_side!r}")
             out.append({
                 "player": first["player"], "snapshots": len(grp),
                 "first_line": first_implied, "latest_line": latest_implied,
