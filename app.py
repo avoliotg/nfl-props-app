@@ -615,127 +615,97 @@ with tab_top:
                        "vig-adjusted breakeven, in points) is the same unit across all "
                        "markets, so plays are directly comparable.")
 
-def render_movement_section(df, market_name_label, is_td_market):
-    """Render one market's line-movement table: sorted by |movement|, with
-    toward/away color-coded and tier-colored, matching the app's visual language."""
-    if len(df) == 0:
-        st.caption(f"No {market_name_label} players with 2+ snapshots yet.")
-        return
-
-    df = df.copy()
-    df["abs_move"] = df["line_move"].abs().fillna(0)
-    df = df.sort_values("abs_move", ascending=False)
-
-    line_label = "Prob%" if is_td_market else "Line"
-    heads = ["Player", "Tier", "Proj", "Latest Edge", "Side", "First → Latest " + line_label,
-             "Move", "vs. Model", "First Edge", "Snaps", "First Cap.", "Latest Cap."]
-    aligns = ["left", "left", "right", "right", "left", "right", "right", "center", "right", "center", "right", "right"]
-
-    rows = ""
-    for i, r in df.iterrows():
-        bg = "#1e1912" if i % 2 == 0 else "#2a2318"
-        tier_c = TIER_COLORS.get(r["latest_tier"], "#8a7f70")
-        ta = r.get("toward_away", "")
-        ta_disp = {"toward": "🟢 toward", "away": "🔴 away", "flat": "⚪ flat"}.get(ta, "—")
-        move_v = r["line_move"] if pd.notna(r["line_move"]) else None
-        move_disp = f"{move_v:+.1f}" if move_v is not None else "—"
-        first_l = f"{r['first_line']:.1f}" if pd.notna(r.get("first_line")) else "—"
-        latest_l = f"{r['latest_line']:.1f}" if pd.notna(r.get("latest_line")) else "—"
-        latest_edge_v = r.get("latest_edge")
-        latest_edge_disp = f"{latest_edge_v:+.1f}" if pd.notna(latest_edge_v) else "—"
-        first_edge_v = r.get("first_edge")
-        first_edge_disp = f"{first_edge_v:+.1f}" if pd.notna(first_edge_v) else "—"
-        proj_v = r.get("raw_projection")
-        proj_disp = f"{proj_v:.1f}" if pd.notna(proj_v) else "—"
-        side_disp = r.get("latest_side") or "—"
-        side_c = "#4caf72" if side_disp == "OVER" else "#e0655a" if side_disp == "UNDER" else "#c0b090"
-
-        rows += f"""<tr style="background:{bg};">
-          <td style="padding:9px 12px;font-weight:600;">{r['player']}</td>
-          <td style="padding:9px 12px;font-weight:800;text-transform:uppercase;color:{tier_c};">{r['latest_tier'] or '—'}</td>
-          <td style="padding:9px 12px;text-align:right;">{proj_disp}</td>
-          <td style="padding:9px 12px;text-align:right;font-weight:700;">{latest_edge_disp}</td>
-          <td style="padding:9px 12px;font-weight:700;color:{side_c};">{side_disp}</td>
-          <td style="padding:9px 12px;text-align:right;color:#c0b090;">{first_l} → {latest_l}</td>
-          <td style="padding:9px 12px;text-align:right;font-weight:700;">{move_disp}</td>
-          <td style="padding:9px 12px;text-align:center;">{ta_disp}</td>
-          <td style="padding:9px 12px;text-align:right;color:#8a7f70;">{first_edge_disp}</td>
-          <td style="padding:9px 12px;text-align:center;">{r['snapshots']}</td>
-          <td style="padding:9px 12px;text-align:right;color:#8a7f70;font-size:0.8rem;">{r.get('first_captured','—')}</td>
-          <td style="padding:9px 12px;text-align:right;color:#8a7f70;font-size:0.8rem;">{r.get('latest_captured','—')}</td>
-        </tr>"""
-
-    header = "".join(
-        f'<th style="padding:11px 12px;text-align:{a};background:#e0873a;'
-        f'color:#161310;font-weight:800;font-size:0.78rem;text-transform:uppercase;'
-        f'letter-spacing:0.04em;position:sticky;top:0;z-index:2;">{h}</th>'
-        for h, a in zip(heads, aligns))
-
-    st.markdown(f"""<div style="border-radius:10px;overflow-x:auto;overflow-y:auto;max-height:60vh;
-        -webkit-overflow-scrolling:touch;border:1px solid #3a2f1e;
-        box-shadow:0 4px 16px rgba(0,0,0,0.4);margin-top:8px;margin-bottom:20px;">
-        <table style="width:100%;border-collapse:collapse;font-size:0.85rem;
-        font-family:'Source Sans Pro',sans-serif;">
-        <thead><tr>{header}</tr></thead><tbody>{rows}</tbody></table></div>""",
-        unsafe_allow_html=True)
 
 # ============ LINE MOVEMENT ============
 with tab_movement:
     st.subheader("📈 Line Movement")
-    st.caption("Compares your earliest captured line for each player to your most recent "
-               "one, across every market. 🟢 means the line moved toward the model's read "
-               "(the market agreeing with you) — 🔴 means it moved away (be more skeptical). "
-               "Sorted within each market by how much the line moved. Early in the season, "
-               "most players will show only 1 snapshot and won't appear here yet.")
+    st.caption("Every captured snapshot for each player, across all markets. "
+               "🟢 toward = the line moved toward the model's read (market agreeing). "
+               "🔴 away = it moved against the model (be more skeptical). "
+               "Sparklines need 3+ snapshots to render. Check **Bet?** and hit Save to log picks.")
 
     lm_season = st.selectbox("Season", module.available_seasons(),
                              index=len(module.available_seasons()) - 1, key="lm_season")
     lm_weeks = module.available_weeks(lm_season)
     lm_week = st.selectbox("Week", lm_weeks, index=len(lm_weeks) - 1, key="lm_week")
 
+    TIER_EMOJI = {"Pass": "⚪ Pass", "Lean": "🟡 Lean",
+                  "Strong": "🟢 Strong", "Max": "🔥 Max"}
+    TA_EMOJI = {"toward": "🟢 toward", "away": "🔴 away", "flat": "⚪ flat"}
+
     for mkt_key, mkt_label in MARKETS.items():
         st.markdown(f"#### {mkt_key}")
         mv = db.get_line_movement(lm_season, lm_week, mkt_label, st.session_state.user)
-        if len(mv) > 0:
-            mv_display = mv.copy()
-            mv_display["first_captured"] = pd.to_datetime(mv_display["first_captured"], errors="coerce", utc=True).dt.strftime("%m/%d %I:%M%p")
-            mv_display["latest_captured"] = pd.to_datetime(mv_display["latest_captured"], errors="coerce", utc=True).dt.strftime("%m/%d %I:%M%p")
-            render_movement_section(mv_display, mkt_key, is_td_market=(mkt_label == "anytime_td"))
 
+        if len(mv) == 0:
+            st.caption(f"No {mkt_key} players with 2+ snapshots yet.")
+            continue
+
+        is_td = (mkt_label == "anytime_td")
+        line_word = "Prob%" if is_td else "Line"
+
+        mv = mv.copy()
+        mv["abs_move"] = mv["line_move"].abs().fillna(0)
+        mv = mv.sort_values("abs_move", ascending=False).reset_index(drop=True)
+
+        grid = pd.DataFrame({
+            "Player": mv["player"],
+            "Tier": mv["latest_tier"].map(lambda t: TIER_EMOJI.get(t, "—")),
+            "Proj": mv["raw_projection"],
+            "Edge": mv["latest_edge"],
+            "Side": mv["latest_side"].replace("", "—") if not is_td else "—",
+            "Trend": mv["series"],
+            f"First {line_word}": mv["first_line"],
+            f"Latest {line_word}": mv["latest_line"],
+            "Move": mv["line_move"],
+            "vs. Model": mv["toward_away"].map(lambda t: TA_EMOJI.get(t, "—")),
+            "Snaps": mv["snapshots"],
+            "Bet?": False,
+        })
+
+        edited = st.data_editor(
+            grid, width='stretch', hide_index=True,
+            disabled=[c for c in grid.columns if c != "Bet?"],
+            column_config={
+                "Player": st.column_config.TextColumn("Player", pinned=True, width="medium"),
+                "Tier": st.column_config.TextColumn("Tier", width="small"),
+                "Proj": st.column_config.NumberColumn("Proj", format="%.1f", width="small"),
+                "Edge": st.column_config.NumberColumn("Edge", format="%+.1f", width="small"),
+                "Side": st.column_config.TextColumn("Side", width="small"),
+                "Trend": st.column_config.LineChartColumn(f"{line_word} Trend", width="medium"),
+                f"First {line_word}": st.column_config.NumberColumn(f"First {line_word}", format="%.1f", width="small"),
+                f"Latest {line_word}": st.column_config.NumberColumn(f"Latest {line_word}", format="%.1f", width="small"),
+                "Move": st.column_config.NumberColumn("Move", format="%+.1f", width="small"),
+                "vs. Model": st.column_config.TextColumn("vs. Model", width="small"),
+                "Snaps": st.column_config.NumberColumn("Snaps", format="%d", width="small"),
+                "Bet?": st.column_config.CheckboxColumn("Bet?", width="small"),
+            },
+            key=f"movement_editor_{mkt_label}")
+
+        if st.button(f"💾 Save {mkt_key} to Log", key=f"movement_save_btn_{mkt_label}"):
             savable = mv[mv["latest_edge"].notna()].copy()
-            if len(savable) > 0:
-                save_grid = pd.DataFrame({
-                    "player": savable["player"],
-                    "projection": savable["raw_projection"],
-                    "line": savable["raw_line"],
-                    "over_odds": savable["raw_over_odds"],
-                    "under_odds": savable["raw_under_odds"],
-                    "edge": savable["latest_edge"],
-                    "p_over": None,
-                    "side": savable["latest_side"] if mkt_label != "anytime_td" else "",
-                    "tier": savable["latest_tier"],
-                    "bet": False,
-                })
-                with st.expander(f"💾 Save {mkt_key} picks from this view"):
-                    edited_save = st.data_editor(
-                        save_grid, width='stretch', hide_index=True,
-                        column_order=["player", "edge", "tier", "bet"],
-                        disabled=[c for c in save_grid.columns if c != "bet"],
-                        column_config={"bet": st.column_config.CheckboxColumn("Bet?", width="small")},
-                        key=f"movement_save_{mkt_label}")
-                    if st.button(f"Save {mkt_key} to Log", key=f"movement_save_btn_{mkt_label}"):
-                        entries = edited_save.copy()
-                        entries["logged_at"] = betlog.now_stamp()
-                        entries["market"] = mkt_label
-                        entries["season"] = lm_season
-                        entries["week"] = lm_week
-                        entries["result_yards"] = None
-                        entries["outcome"] = None
-                        entries = entries[betlog.COLUMNS]
-                        betlog.append_entries(entries, st.session_state.user)
-                        st.success(f"Saved {len(entries)} {mkt_key} pick(s) to the log.")
-        else:
-            render_movement_section(mv, mkt_key, is_td_market=(mkt_label == "anytime_td"))
+            bet_flags = edited.set_index("Player")["Bet?"].to_dict()
+            entries = pd.DataFrame({
+                "player": savable["player"],
+                "projection": savable["raw_projection"],
+                "line": savable["raw_line"],
+                "over_odds": savable["raw_over_odds"],
+                "under_odds": savable["raw_under_odds"],
+                "edge": savable["latest_edge"],
+                "p_over": None,
+                "side": savable["latest_side"] if not is_td else "",
+                "tier": savable["latest_tier"],
+                "bet": savable["player"].map(lambda p: bool(bet_flags.get(p, False))),
+            })
+            entries["logged_at"] = betlog.now_stamp()
+            entries["market"] = mkt_label
+            entries["season"] = lm_season
+            entries["week"] = lm_week
+            entries["result_yards"] = None
+            entries["outcome"] = None
+            entries = entries[betlog.COLUMNS]
+            betlog.append_entries(entries, st.session_state.user)
+            st.success(f"Saved {len(entries)} {mkt_key} pick(s) to the log.")
             
                        # ============ GUIDE ============
 with tab_guide:

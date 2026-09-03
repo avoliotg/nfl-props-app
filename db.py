@@ -326,6 +326,8 @@ def get_line_movement(season, week, market, user, sport="NFL"):
             move = (latest_implied - first_implied) if (first_implied is not None and latest_implied is not None) else None
             first_side = _td_side(first.get("projection"), first_implied)
             latest_side = _td_side(last.get("projection"), latest_implied)
+            td_series = [anytime_td.american_to_prob(v) for v in grp["over_odds"].tolist()]
+            td_series = [v for v in td_series if v is not None]
             out.append({
                 "player": first["player"], "snapshots": len(grp),
                 "first_line": first_implied, "latest_line": latest_implied,
@@ -335,11 +337,13 @@ def get_line_movement(season, week, market, user, sport="NFL"):
                 "first_captured": first.get("captured_at"), "latest_captured": last.get("captured_at"),
                 "raw_line": last.get("line"), "raw_over_odds": last.get("over_odds"),
                 "raw_under_odds": last.get("under_odds"), "raw_projection": last.get("projection"),
+                "series": td_series,
             })
         else:
             first_side = _side(first)
             latest_side = _side(last)
             move = (last.get("line") - first.get("line")) if pd.notna(last.get("line")) and pd.notna(first.get("line")) else None
+            line_series = [v for v in grp["line"].tolist() if pd.notna(v)]
             out.append({
                 "player": first["player"], "snapshots": len(grp),
                 "first_line": first.get("line"), "latest_line": last.get("line"),
@@ -349,5 +353,6 @@ def get_line_movement(season, week, market, user, sport="NFL"):
                 "first_captured": first.get("captured_at"), "latest_captured": last.get("captured_at"),
                 "raw_line": last.get("line"), "raw_over_odds": last.get("over_odds"),
                 "raw_under_odds": last.get("under_odds"), "raw_projection": last.get("projection"),
+                "series": line_series,
             })
     return pd.DataFrame(out)
