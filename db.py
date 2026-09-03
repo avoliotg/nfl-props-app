@@ -253,9 +253,9 @@ def get_line_movement(season, week, market, user, sport="NFL"):
     """For a market/week, return a DataFrame with one row per player who has
     2+ captured snapshots: first vs. latest line/projection/edge, the movement
     between them, the latest tier, and whether the line moved TOWARD or AWAY
-    from the model's original (first-snapshot) read. TD (odds-only, no line)
-    compares IMPLIED PROBABILITY instead of raw odds, since odds aren't linear.
-    Players with only 1 snapshot are excluded (nothing to compare yet)."""
+    from the model's read. TD (odds-only, no line) compares IMPLIED PROBABILITY
+    instead of raw odds, since odds aren't linear. Players with only 1
+    snapshot are excluded (nothing to compare yet)."""
     from models import anytime_td
     import mc
 
@@ -285,13 +285,17 @@ def get_line_movement(season, week, market, user, sport="NFL"):
             return "UNDER"
         return "—"
 
-    def _toward_away(first_side, move):
-        """Did the line move toward or away from the model's ORIGINAL read?"""
-        if not first_side or move is None or pd.isna(move):
+    def _toward_away(first_side, latest_side, move):
+        """Did the line move toward or away from the model's read? Prefers
+        the FIRST snapshot's side (the model's original take); falls back to
+        the LATEST side if the first snapshot predates edge storage (an
+        approximation — assumes the model's lean didn't flip in a few days)."""
+        side = first_side or latest_side
+        if not side or move is None or pd.isna(move):
             return ""
-        if first_side == "OVER" and move > 0:
+        if side == "OVER" and move > 0:
             return "toward"
-        if first_side == "UNDER" and move < 0:
+        if side == "UNDER" and move < 0:
             return "toward"
         if move == 0:
             return "flat"
@@ -312,29 +316,36 @@ def get_line_movement(season, week, market, user, sport="NFL"):
             first_implied = anytime_td.american_to_prob(first.get("over_odds"))
             latest_implied = anytime_td.american_to_prob(last.get("over_odds"))
             move = (latest_implied - first_implied) if (first_implied is not None and latest_implied is not None) else None
-            # for TD, "side" is really "model likes YES more/less than market" — approximate
-            # using projection vs implied% as the directional read
-            first_proj = first.get("projection")
-            first_side = ""
-            if first_proj is not None and first_implied is not None:
-                first_side = "OVER" if first_proj > first_implied else "UNDER" if first_proj < first_implied else "—"
+
+            def _td_side(proj, implied):
+                if proj is None or implied is None:
+                    return ""
+                if proj > implied:
+                    return "OVER"
+                elif proj < implied:
+                    return "UNDER"
+                return "—"
+
+            first_side = _td_side(first.get("projection"), first_implied)
+            latest_side = _td_side(last.get("projection"), latest_implied)
             out.append({
                 "player": first["player"], "snapshots": len(grp),
                 "first_line": first_implied, "latest_line": latest_implied,
-                "line_move": move, "toward_away": _toward_away(first_side, move),
+                "line_move": move, "toward_away": _toward_away(first_side, latest_side, move),
                 "first_edge": first.get("edge"), "first_side": first_side,
                 "latest_edge": latest_edge, "latest_side": "", "latest_tier": latest_tier,
                 "first_captured": first.get("captured_at"), "latest_captured": last.get("captured_at"),
             })
         else:
             first_side = _side(first)
+            latest_side = _side(last)
             move = (last.get("line") - first.get("line")) if pd.notna(last.get("line")) and pd.notna(first.get("line")) else None
             out.append({
                 "player": first["player"], "snapshots": len(grp),
                 "first_line": first.get("line"), "latest_line": last.get("line"),
-                "line_move": move, "toward_away": _toward_away(first_side, move),
+                "line_move": move, "toward_away": _toward_away(first_side, latest_side, move),
                 "first_edge": first.get("edge"), "first_side": first_side,
-                "latest_edge": latest_edge, "latest_side": _side(last), "latest_tier": latest_tier,
+                "latest_edge": latest_edge, "latest_side": latest_side, "latest_tier": latest_tier,
                 "first_captured": first.get("captured_at"), "latest_captured": last.get("captured_at"),
             })
     return pd.DataFrame(out)
