@@ -285,11 +285,16 @@ def get_line_movement(season, week, market, user, sport="NFL"):
             return "UNDER"
         return "—"
 
+    def _td_side(proj, implied):
+        if proj is None or implied is None:
+            return ""
+        if proj > implied:
+            return "OVER"
+        elif proj < implied:
+            return "UNDER"
+        return "—"
+
     def _toward_away(first_side, latest_side, move):
-        """Did the line move toward or away from the model's read? Prefers
-        the FIRST snapshot's side (the model's original take); falls back to
-        the LATEST side if the first snapshot predates edge storage (an
-        approximation — assumes the model's lean didn't flip in a few days)."""
         side = first_side or latest_side
         if not side or move is None or pd.isna(move):
             return ""
@@ -316,16 +321,6 @@ def get_line_movement(season, week, market, user, sport="NFL"):
             first_implied = anytime_td.american_to_prob(first.get("over_odds"))
             latest_implied = anytime_td.american_to_prob(last.get("over_odds"))
             move = (latest_implied - first_implied) if (first_implied is not None and latest_implied is not None) else None
-
-            def _td_side(proj, implied):
-                if proj is None or implied is None:
-                    return ""
-                if proj > implied:
-                    return "OVER"
-                elif proj < implied:
-                    return "UNDER"
-                return "—"
-
             first_side = _td_side(first.get("projection"), first_implied)
             latest_side = _td_side(last.get("projection"), latest_implied)
             out.append({
