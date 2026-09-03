@@ -677,39 +677,23 @@ def render_movement_section(df, market_name_label, is_td_market):
 with tab_movement:
     st.subheader("📈 Line Movement")
     st.caption("Compares your earliest captured line for each player to your most recent "
-               "one. Meaningful once you've captured a player's line more than once "
-               "(e.g. an early-week snapshot and a Sunday-morning one). Early in the "
-               "season, most players will show only 1 snapshot — that's expected.")
+               "one, across every market. 🟢 means the line moved toward the model's read "
+               "(the market agreeing with you) — 🔴 means it moved away (be more skeptical). "
+               "Sorted within each market by how much the line moved. Early in the season, "
+               "most players will show only 1 snapshot and won't appear here yet.")
 
-    lm1, lm2 = st.columns(2)
-    with lm1:
-        lm_season = st.selectbox("Season", module.available_seasons(),
-                                 index=len(module.available_seasons()) - 1, key="lm_season")
-    with lm2:
-        lm_weeks = module.available_weeks(lm_season)
-        lm_week = st.selectbox("Week", lm_weeks, index=len(lm_weeks) - 1, key="lm_week")
+    lm_season = st.selectbox("Season", module.available_seasons(),
+                             index=len(module.available_seasons()) - 1, key="lm_season")
+    lm_weeks = module.available_weeks(lm_season)
+    lm_week = st.selectbox("Week", lm_weeks, index=len(lm_weeks) - 1, key="lm_week")
 
-    movement = db.get_line_movement(lm_season, lm_week, market_key, st.session_state.user)
-    if len(movement) > 0:
-        movement["first_captured"] = pd.to_datetime(
-            movement["first_captured"], errors="coerce", utc=True
-        ).dt.strftime("%m/%d %I:%M%p")
-        movement["latest_captured"] = pd.to_datetime(
-            movement["latest_captured"], errors="coerce", utc=True
-        ).dt.strftime("%m/%d %I:%M%p")
-
-    if len(movement) == 0:
-        st.info("No players with multiple snapshots yet for this market/week. "
-                "Capture the same player's line more than once (e.g. early-week "
-                "and closer to kickoff) to see movement here.")
-    else:
-        st.markdown(f"**{len(movement)}** player(s) with 2+ snapshots tracked.")
-        show_cols = ["player", "snapshots", "first_line", "latest_line", "line_move",
-                     "first_edge", "first_side", "latest_edge", "latest_side", "latest_tier",
-                     "toward_away", "first_captured", "latest_captured"]
-        show_cols = [c for c in show_cols if c in movement.columns]
-        st.dataframe(movement[show_cols].sort_values("snapshots", ascending=False),
-                     width='stretch', hide_index=True)
+    for mkt_key, mkt_label in MARKETS.items():
+        st.markdown(f"#### {mkt_key}")
+        mv = db.get_line_movement(lm_season, lm_week, mkt_label, st.session_state.user)
+        if len(mv) > 0:
+            mv["first_captured"] = pd.to_datetime(mv["first_captured"], errors="coerce", utc=True).dt.strftime("%m/%d %I:%M%p")
+            mv["latest_captured"] = pd.to_datetime(mv["latest_captured"], errors="coerce", utc=True).dt.strftime("%m/%d %I:%M%p")
+        render_movement_section(mv, mkt_key, is_td_market=(mkt_label == "anytime_td"))
             
                        # ============ GUIDE ============
 with tab_guide:
