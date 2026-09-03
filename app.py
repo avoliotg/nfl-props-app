@@ -723,6 +723,7 @@ with tab_movement:
                         disabled=[c for c in save_grid.columns if c != "bet"],
                         column_config={"bet": st.column_config.CheckboxColumn("Bet?", width="small")},
                         key=f"movement_save_{mkt_label}")
+                    if st.button(f"Save {mkt_key} to Log", key=f"movement_save_btn_{mkt_label}"):
                         entries = edited_save.copy()
                         entries["logged_at"] = betlog.now_stamp()
                         entries["market"] = mkt_label
