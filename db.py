@@ -277,16 +277,17 @@ def get_line_movement(season, week, market, user, sport="NFL"):
     is_td = (market == "anytime_td")
 
     def _side(row):
-        if pd.isna(row.get("projection")) or pd.isna(row.get("line")):
+        proj, line = row.get("projection"), row.get("line")
+        if proj is None or line is None or pd.isna(proj) or pd.isna(line):
             return ""
-        if row["projection"] > row["line"]:
+        if proj > line:
             return "OVER"
-        elif row["projection"] < row["line"]:
+        elif proj < line:
             return "UNDER"
         return "—"
 
     def _td_side(proj, implied):
-        if proj is None or implied is None:
+        if proj is None or implied is None or pd.isna(proj) or pd.isna(implied):
             return ""
         if proj > implied:
             return "OVER"
@@ -295,8 +296,10 @@ def get_line_movement(season, week, market, user, sport="NFL"):
         return "—"
 
     def _toward_away(first_side, latest_side, move):
-        side = first_side or latest_side
-        if not side or move is None or pd.isna(move):
+        """Prefers the FIRST snapshot's side; falls back to LATEST if the first
+        is missing or a tie. Only OVER/UNDER count as a usable direction."""
+        side = first_side if first_side in ("OVER", "UNDER") else latest_side
+        if side not in ("OVER", "UNDER") or move is None or pd.isna(move):
             return ""
         if side == "OVER" and move > 0:
             return "toward"
@@ -315,7 +318,7 @@ def get_line_movement(season, week, market, user, sport="NFL"):
         last = grp.iloc[-1]
 
         latest_edge = last.get("edge")
-        latest_tier = mc.tier_for_edge(latest_edge) if latest_edge is not None else ""
+        latest_tier = mc.tier_for_edge(latest_edge) if latest_edge is not None and not pd.isna(latest_edge) else ""
 
         if is_td:
             first_implied = anytime_td.american_to_prob(first.get("over_odds"))
@@ -323,8 +326,6 @@ def get_line_movement(season, week, market, user, sport="NFL"):
             move = (latest_implied - first_implied) if (first_implied is not None and latest_implied is not None) else None
             first_side = _td_side(first.get("projection"), first_implied)
             latest_side = _td_side(last.get("projection"), latest_implied)
-            if first["player"] in ("Sam Darnold", "Josh Allen"):
-                st.write(f"DEBUG TD: {first['player']!r} | first_proj={first.get('projection')} first_implied={first_implied} first_side={first_side!r} | latest_proj={last.get('projection')} latest_implied={latest_implied} latest_side={latest_side!r} | move={move} | resolved_side={first_side or latest_side!r}")
             out.append({
                 "player": first["player"], "snapshots": len(grp),
                 "first_line": first_implied, "latest_line": latest_implied,
