@@ -255,7 +255,9 @@ def get_line_movement(season, week, market, user, sport="NFL"):
     between them, the latest tier, and whether the line moved TOWARD or AWAY
     from the model's read. TD (odds-only, no line) compares IMPLIED PROBABILITY
     instead of raw odds, since odds aren't linear. Players with only 1
-    snapshot are excluded (nothing to compare yet)."""
+    snapshot are excluded (nothing to compare yet). Also carries the RAW
+    latest line/odds (not just display values) so a save-to-log action can
+    use them directly."""
     from models import anytime_td
     import mc
 
@@ -296,8 +298,6 @@ def get_line_movement(season, week, market, user, sport="NFL"):
         return "—"
 
     def _toward_away(first_side, latest_side, move):
-        """Prefers the FIRST snapshot's side; falls back to LATEST if the first
-        is missing or a tie. Only OVER/UNDER count as a usable direction."""
         side = first_side if first_side in ("OVER", "UNDER") else latest_side
         if side not in ("OVER", "UNDER") or move is None or pd.isna(move):
             return ""
@@ -333,6 +333,8 @@ def get_line_movement(season, week, market, user, sport="NFL"):
                 "first_edge": first.get("edge"), "first_side": first_side,
                 "latest_edge": latest_edge, "latest_side": "", "latest_tier": latest_tier,
                 "first_captured": first.get("captured_at"), "latest_captured": last.get("captured_at"),
+                "raw_line": last.get("line"), "raw_over_odds": last.get("over_odds"),
+                "raw_under_odds": last.get("under_odds"), "raw_projection": last.get("projection"),
             })
         else:
             first_side = _side(first)
@@ -345,5 +347,7 @@ def get_line_movement(season, week, market, user, sport="NFL"):
                 "first_edge": first.get("edge"), "first_side": first_side,
                 "latest_edge": latest_edge, "latest_side": latest_side, "latest_tier": latest_tier,
                 "first_captured": first.get("captured_at"), "latest_captured": last.get("captured_at"),
+                "raw_line": last.get("line"), "raw_over_odds": last.get("over_odds"),
+                "raw_under_odds": last.get("under_odds"), "raw_projection": last.get("projection"),
             })
     return pd.DataFrame(out)
