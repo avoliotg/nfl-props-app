@@ -718,8 +718,9 @@ with tab_guide:
 
 OpalScales projects player prop outcomes using statistical models built on years of data,
 then compares those projections to the sportsbook line to find where there might be an edge.
-It currently covers five NFL markets: receiving yards, receptions, rushing yards, QB passing
-yards, and anytime TD. The same approach can extend to other sports and markets down the road.
+It currently covers NFL receiving yards, receptions, rushing yards (including a separate model
+just for quarterback rushing), QB passing yards, and anytime TD. The same approach can extend to
+other sports and markets down the road.
 
 Think of it as a second opinion, not a crystal ball. It does the math so you can bring the
 football brain.
@@ -736,8 +737,12 @@ football brain.
    - Anytime TD: enter the **American odds** (e.g. 150 for +150, or -200).
 4. The app computes the **edge** for you, tells you which side it favors, and sorts it into a tier.
 5. **Save picks to the Log**, tick the ones you actually bet, and the **Scorecard** tracks how
-   they turn out over time. The **Player** tab shows any player's projection history versus real
-   results, and **Top Plays** ranks your best edges across every market at once.
+   they turn out over time.
+
+The other tabs: **Top Plays** ranks your best edges across every market at once. **Line Movement**
+shows how the sportsbook's numbers have shifted since you first captured them, which is often the
+most useful screen for deciding what to actually bet. **Market History** shows any player's
+projection history versus real results for the market you have selected.
 
 A note on your edits: anything you type on the Board lives only in your session. It never changes
 the shared line data, so feel free to test alternate lines or numbers from a different book. Your
@@ -784,6 +789,59 @@ The lesson: a projection that "disagrees" with the line is not automatically a b
 most of the time, should be a pass. That is what an efficient market looks like. The edge number
 tells you the rare times the line is actually soft enough to be worth it. Chase the edge, not the
 gut feeling.
+
+---
+
+### The Line Movement tab: letting the market check your work
+
+This is the tab that shows you something no projection can: whether the sportsbook's own
+number is drifting toward your model's read, or away from it.
+
+Every time lines get imported, the app saves a timestamped snapshot instead of overwriting the
+old one. The Line Movement tab compares your earliest captured line for each player against your
+most recent one, and shows the trend of every snapshot in between as a small sparkline.
+
+**How to read the "vs. Model" column:**
+
+- **🟢 toward** means the line moved in the direction your model favored. If the model liked the
+  under and the line dropped, that is the market drifting your way after you already spotted it.
+- **🔴 away** means the line moved against your model's read. The market is getting more confident
+  in the opposite direction.
+- **⚪ flat** means the line has not moved between your snapshots.
+
+**Why toward is a green flag:** the closing line is the sharpest number the market ever produces,
+because it has absorbed every injury report, every piece of news, and all the sharp money. If the
+line is moving toward the side your model already picked, that is independent confirmation that
+your read might be real. You bought in at a better number than the market later settled on.
+
+**Why away is a red flag, especially on a star:** a big adverse move on a heavily bet player
+usually means the market knows something the model does not. The model runs on last season's
+bridged data early in the year, so it cannot see a scheme change, a new role, or a beat reporter's
+practice note. When sharp money moves hard against you on a well known name, the honest move is
+to distrust the model, not the line.
+
+**Two real examples from Week 1:**
+
+*The green flag.* A model projection of 13.3 receiving yards against an opening line of 21.5. The
+model liked the under. Over the next two days, the line dropped to 18.5, a three yard move toward
+exactly the side the model favored, and the edge stayed strong at +12.1. The market was catching
+up to something the model had already flagged.
+
+*The red flag.* A star receiver projected for 56.3 yards against an opening line of 62.5. The model
+liked the under, and the edge looked appealing at +6.1. But the line then moved hard the other way,
+all the way up to 69.5. That is a seven point adverse move on a heavily bet player, which is a
+strong signal the market had information the model was missing. Despite a tempting edge number,
+this one deserves skepticism rather than a bet.
+
+**How to use it in practice:** scan each market's table sorted by how much the line moved, since
+the biggest movers are usually the most interesting cases in either direction. A solid edge paired
+with 🟢 toward is your best combination. A solid edge paired with 🔴 away on a popular player is
+worth a hard second look before you risk anything. You can check **Bet?** and save picks straight
+from this tab, same as from the Board.
+
+One honest caveat: this tool needs at least two captures of the same player to say anything, so
+early in the week or early in the season, many players will show nothing yet. Capturing lines more
+than once per week is what makes this tab useful.
 
 ---
 
