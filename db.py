@@ -269,6 +269,7 @@ def get_line_movement(season, week, market, user, sport="NFL"):
 
     if not rows:
         return pd.DataFrame()
+    print("DEBUG TD raw row sample:", rows[0])
 
     df = pd.DataFrame(rows)
     df["player_norm"] = df["player"].apply(_norm_name)
