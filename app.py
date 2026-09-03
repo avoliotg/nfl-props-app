@@ -615,6 +615,64 @@ with tab_top:
                        "vig-adjusted breakeven, in points) is the same unit across all "
                        "markets, so plays are directly comparable.")
 
+def render_movement_section(df, market_name_label, is_td_market):
+    """Render one market's line-movement table: sorted by |movement|, with
+    toward/away color-coded and tier-colored, matching the app's visual language."""
+    if len(df) == 0:
+        st.caption(f"No {market_name_label} players with 2+ snapshots yet.")
+        return
+
+    df = df.copy()
+    df["abs_move"] = df["line_move"].abs().fillna(0)
+    df = df.sort_values("abs_move", ascending=False)
+
+    line_label = "Prob%" if is_td_market else "Line"
+    heads = ["Player", "Tier", "Latest Edge", "First → Latest " + line_label,
+             "Move", "vs. Model", "First Edge", "Snaps", "First Cap.", "Latest Cap."]
+    aligns = ["left", "left", "right", "right", "right", "center", "right", "center", "right", "right"]
+
+    rows = ""
+    for i, r in df.iterrows():
+        bg = "#1e1912" if i % 2 == 0 else "#2a2318"
+        tier_c = TIER_COLORS.get(r["latest_tier"], "#8a7f70")
+        ta = r.get("toward_away", "")
+        ta_disp = {"toward": "🟢 toward", "away": "🔴 away", "flat": "⚪ flat"}.get(ta, "—")
+        move_v = r["line_move"] if pd.notna(r["line_move"]) else None
+        move_disp = f"{move_v:+.1f}" if move_v is not None else "—"
+        first_l = f"{r['first_line']:.1f}" if pd.notna(r.get("first_line")) else "—"
+        latest_l = f"{r['latest_line']:.1f}" if pd.notna(r.get("latest_line")) else "—"
+        latest_edge_v = r.get("latest_edge")
+        latest_edge_disp = f"{latest_edge_v:+.1f}" if pd.notna(latest_edge_v) else "—"
+        first_edge_v = r.get("first_edge")
+        first_edge_disp = f"{first_edge_v:+.1f}" if pd.notna(first_edge_v) else "—"
+
+        rows += f"""<tr style="background:{bg};">
+          <td style="padding:9px 12px;font-weight:600;">{r['player']}</td>
+          <td style="padding:9px 12px;font-weight:800;text-transform:uppercase;color:{tier_c};">{r['latest_tier'] or '—'}</td>
+          <td style="padding:9px 12px;text-align:right;font-weight:700;">{latest_edge_disp}</td>
+          <td style="padding:9px 12px;text-align:right;color:#c0b090;">{first_l} → {latest_l}</td>
+          <td style="padding:9px 12px;text-align:right;font-weight:700;">{move_disp}</td>
+          <td style="padding:9px 12px;text-align:center;">{ta_disp}</td>
+          <td style="padding:9px 12px;text-align:right;color:#8a7f70;">{first_edge_disp}</td>
+          <td style="padding:9px 12px;text-align:center;">{r['snapshots']}</td>
+          <td style="padding:9px 12px;text-align:right;color:#8a7f70;font-size:0.8rem;">{r.get('first_captured','—')}</td>
+          <td style="padding:9px 12px;text-align:right;color:#8a7f70;font-size:0.8rem;">{r.get('latest_captured','—')}</td>
+        </tr>"""
+
+    header = "".join(
+        f'<th style="padding:11px 12px;text-align:{a};background:#e0873a;'
+        f'color:#161310;font-weight:800;font-size:0.78rem;text-transform:uppercase;'
+        f'letter-spacing:0.04em;position:sticky;top:0;z-index:2;">{h}</th>'
+        for h, a in zip(heads, aligns))
+
+    st.markdown(f"""<div style="border-radius:10px;overflow-x:auto;overflow-y:auto;max-height:60vh;
+        -webkit-overflow-scrolling:touch;border:1px solid #3a2f1e;
+        box-shadow:0 4px 16px rgba(0,0,0,0.4);margin-top:8px;margin-bottom:20px;">
+        <table style="width:100%;border-collapse:collapse;font-size:0.85rem;
+        font-family:'Source Sans Pro',sans-serif;">
+        <thead><tr>{header}</tr></thead><tbody>{rows}</tbody></table></div>""",
+        unsafe_allow_html=True)
+
 # ============ LINE MOVEMENT ============
 with tab_movement:
     st.subheader("📈 Line Movement")
