@@ -251,9 +251,12 @@ def sign_in(email, password):
 
 def get_line_movement(season, week, market, user, sport="NFL"):
     """For a market/week, return a DataFrame with one row per player who has
-    2+ captured snapshots: first line/projection/edge vs. latest, and the
-    movement between them. Players with only 1 snapshot are excluded (nothing
-    to compare yet)."""
+    2+ captured snapshots: first vs. latest line/projection/edge and the
+    movement between them. TD (odds-only, no line) compares IMPLIED PROBABILITY
+    instead of raw odds, since odds aren't linear. Players with only 1
+    snapshot are excluded (nothing to compare yet)."""
+    from models import anytime_td
+
     client = get_authed_client(user)
     try:
         resp = (client.table("lines").select("*")
@@ -269,6 +272,7 @@ def get_line_movement(season, week, market, user, sport="NFL"):
 
     df = pd.DataFrame(rows)
     df["player_norm"] = df["player"].apply(_norm_name)
+    is_td = (market == "anytime_td")
 
     def _side(row):
         if pd.isna(row.get("projection")) or pd.isna(row.get("line")):
@@ -286,14 +290,27 @@ def get_line_movement(season, week, market, user, sport="NFL"):
         grp = grp.sort_values("captured_at")
         first = grp.iloc[0]
         last = grp.iloc[-1]
-        out.append({
-            "player": first["player"],
-            "snapshots": len(grp),
-            "first_line": first.get("line"), "latest_line": last.get("line"),
-            "line_move": (last.get("line") - first.get("line"))
-                         if pd.notna(last.get("line")) and pd.notna(first.get("line")) else None,
-            "first_edge": first.get("edge"), "first_side": _side(first),
-            "latest_edge": last.get("edge"), "latest_side": _side(last),
-            "first_captured": first.get("captured_at"), "latest_captured": last.get("captured_at"),
-        })
+
+        if is_td:
+            first_implied = anytime_td.american_to_prob(first.get("over_odds"))
+            latest_implied = anytime_td.american_to_prob(last.get("over_odds"))
+            move = (latest_implied - first_implied) if (first_implied is not None and latest_implied is not None) else None
+            out.append({
+                "player": first["player"], "snapshots": len(grp),
+                "first_line": first_implied, "latest_line": latest_implied,
+                "line_move": move,
+                "first_edge": first.get("edge"), "first_side": "",
+                "latest_edge": last.get("edge"), "latest_side": "",
+                "first_captured": first.get("captured_at"), "latest_captured": last.get("captured_at"),
+            })
+        else:
+            out.append({
+                "player": first["player"], "snapshots": len(grp),
+                "first_line": first.get("line"), "latest_line": last.get("line"),
+                "line_move": (last.get("line") - first.get("line"))
+                             if pd.notna(last.get("line")) and pd.notna(first.get("line")) else None,
+                "first_edge": first.get("edge"), "first_side": _side(first),
+                "latest_edge": last.get("edge"), "latest_side": _side(last),
+                "first_captured": first.get("captured_at"), "latest_captured": last.get("captured_at"),
+            })
     return pd.DataFrame(out)
