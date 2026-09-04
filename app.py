@@ -77,6 +77,8 @@ st.title("🔮 OpalScales")
 st.caption("An OpalScales modeling project · 🏈 Player prop projections")
 if OPAL_BANNER.strip():
     st.info(OPAL_BANNER)
+if WELCOME_BANNER.strip():
+    st.info(WELCOME_BANNER)
 
 market_name = st.selectbox("Market", list(MARKETS.keys()),
                            help="Which prop market to project.")
