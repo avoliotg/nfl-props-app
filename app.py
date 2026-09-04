@@ -713,6 +713,19 @@ with tab_movement:
             entries = entries[betlog.COLUMNS]
             betlog.append_entries(entries, st.session_state.user)
             st.success(f"Saved {len(entries)} {mkt_key} pick(s) to the log.")
+
+        with st.expander(f"📊 View a player's full {mkt_key} trend"):
+            players_with_series = mv[mv["series"].apply(lambda s: len(s) >= 2)]["player"].tolist()
+            if not players_with_series:
+                st.caption("No players with enough snapshots yet.")
+            else:
+                picked = st.selectbox("Player", players_with_series, key=f"trend_pick_{mkt_label}")
+                row = mv[mv["player"] == picked].iloc[0]
+                series = row["series"]
+                chart_df = pd.DataFrame({line_word: series})
+                st.line_chart(chart_df)
+                st.caption(f"{picked}: {len(series)} snapshot(s) captured, "
+                           f"from {row['first_line']:.1f} to {row['latest_line']:.1f} {line_word.lower()}.")
             
                        # ============ GUIDE ============
 with tab_guide:
