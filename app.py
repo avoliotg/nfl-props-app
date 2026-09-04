@@ -651,15 +651,15 @@ with tab_movement:
         grid = pd.DataFrame({
             "Player": mv["player"],
             "Tier": mv["latest_tier"].map(lambda t: TIER_EMOJI.get(t, "—")),
+            "vs. Model": mv["toward_away"].map(lambda t: TA_EMOJI.get(t, "—")),
             "Proj": mv["raw_projection"],
             "Edge": mv["latest_edge"],
             "Side": mv["latest_side"].replace("", "—") if not is_td else "—",
-            "Trend": mv["series"],
             f"First {line_word}": mv["first_line"],
             f"Latest {line_word}": mv["latest_line"],
             "Move": mv["line_move"],
-            "vs. Model": mv["toward_away"].map(lambda t: TA_EMOJI.get(t, "—")),
             "Snaps": mv["snapshots"],
+            "Trend": mv["series"],
             "Bet?": False,
         })
         for numcol in ["Proj", "Edge", f"First {line_word}", f"Latest {line_word}", "Move"]:
