@@ -649,7 +649,7 @@ with tab_movement:
         mv = mv.sort_values("abs_move", ascending=False).reset_index(drop=True)
 
         grid = pd.DataFrame({
-            "Player": st.column_config.TextColumn("Player", pinned=True, width="small"),
+            "Player": mv["player"],
             "Tier": mv["latest_tier"].map(lambda t: TIER_EMOJI.get(t, "—")),
             "vs. Model": mv["toward_away"].map(lambda t: TA_EMOJI.get(t, "—")),
             "Proj": mv["raw_projection"],
@@ -669,7 +669,7 @@ with tab_movement:
             grid, width='stretch', hide_index=True,
             disabled=[c for c in grid.columns if c != "Bet?"],
             column_config={
-                "Player": st.column_config.TextColumn("Player", pinned=True, width="medium"),
+                "Player": st.column_config.TextColumn("Player", pinned=True, width="small"),
                 "Tier": st.column_config.TextColumn("Tier", width="small"),
                 "Proj": st.column_config.NumberColumn("Proj", format="%.1f", width="small"),
                 "Edge": st.column_config.NumberColumn("Edge", format="%+.1f", width="small"),
