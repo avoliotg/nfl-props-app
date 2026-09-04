@@ -414,6 +414,21 @@ with tab_board:
 
 # ============ PLAYER ============
 with tab_player:
+    market_name = st.selectbox("Market", list(MARKETS.keys()),
+                               help="Which prop market to project.", key="history_market")
+    market_key = MARKETS[market_name]
+    module = MODULES[market_key]
+    IS_PROB = getattr(module, "IS_PROBABILITY", False)
+    if IS_PROB:
+        PROJ_LABEL = "Proj TD%"
+    elif market_key == "receptions":
+        PROJ_LABEL = "Proj Catches"
+    else:
+        PROJ_LABEL = "Proj Yds"
+
+    # ... rest of the existing Market History tab code continues below, unchanged ...
+
+with tab_player:
     st.subheader(f"{market_name} — Market History")
 
     pseason = st.selectbox("Season", module.available_seasons(),
