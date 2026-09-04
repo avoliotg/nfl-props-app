@@ -80,20 +80,6 @@ if OPAL_BANNER.strip():
 if WELCOME_BANNER.strip():
     st.info(WELCOME_BANNER)
 
-market_name = st.selectbox("Market", list(MARKETS.keys()),
-                           help="Which prop market to project.")
-market_key = MARKETS[market_name]
-module = MODULES[market_key]
-
-# Is this a probability market (Anytime TD) rather than a yardage/number market?
-IS_PROB = getattr(module, "IS_PROBABILITY", False)
-# market-aware label for the projection column
-if IS_PROB:
-    PROJ_LABEL = "Proj TD%"
-elif market_key == "receptions":
-    PROJ_LABEL = "Proj Catches"
-else:
-    PROJ_LABEL = "Proj Yds"
 st.divider()
 
 tab_labels = ["📋 Board", "📊 Scorecard", "🎯 Top Plays", "🔍 Market History", "📈 Line Movement", "📖 Guide"]
@@ -182,6 +168,21 @@ def render_html_table(df, cols, aligns):
 
 
 # ============ BOARD ============
+with tab_board:
+    market_name = st.selectbox("Market", list(MARKETS.keys()),
+                               help="Which prop market to project.", key="board_market")
+    market_key = MARKETS[market_name]
+    module = MODULES[market_key]
+    IS_PROB = getattr(module, "IS_PROBABILITY", False)
+    if IS_PROB:
+        PROJ_LABEL = "Proj TD%"
+    elif market_key == "receptions":
+        PROJ_LABEL = "Proj Catches"
+    else:
+        PROJ_LABEL = "Proj Yds"
+
+    # ... rest of the existing Board tab code continues below, unchanged ...
+
 with tab_board:
     st.subheader(f"{market_name} — Board")
 
