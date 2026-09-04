@@ -7,6 +7,9 @@ ADMIN_EMAIL = "avoliotg@gmail.com"
 OPAL_BANNER = ("📣 **Note from OpalScales:** Be wary of huge edges early in the season, "
                "they're often the model's early season blind spots, not real value. See the Guide for details.")
 
+WELCOME_BANNER = ("👋 **New here?** There's a lot of data on this page. Head to the "
+                   "**📖 Guide** tab first, it explains what everything means and how to use it.")
+
 st.set_page_config(page_title="NFL Props", layout="wide")
 # ---------- Login gate ----------
 if "user" not in st.session_state:
