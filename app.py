@@ -487,6 +487,21 @@ with tab_player:
 
 # ============ SCORECARD ============
 with tab_scorecard:
+    market_name = st.selectbox("Market", list(MARKETS.keys()),
+                               help="Which prop market to project.", key="scorecard_market")
+    market_key = MARKETS[market_name]
+    module = MODULES[market_key]
+    IS_PROB = getattr(module, "IS_PROBABILITY", False)
+    if IS_PROB:
+        PROJ_LABEL = "Proj TD%"
+    elif market_key == "receptions":
+        PROJ_LABEL = "Proj Catches"
+    else:
+        PROJ_LABEL = "Proj Yds"
+
+    # ... rest of the existing Scorecard tab code continues below, unchanged ...
+
+with tab_scorecard:
     st.subheader(f"{market_name} — Season Scorecard")
 
     log = betlog.load_log(st.session_state.user)
