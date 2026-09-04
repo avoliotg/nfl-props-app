@@ -732,6 +732,10 @@ football brain.
 
 ---
 
+**Quick tip:** the **Line Movement** tab is one of the most useful screens here. At a glance,
+look for **Tier** paired with **vs. Model** on the same row. Lean or better + 🟢 toward, is
+often a good bet. See below for the full explanation.
+
 ### How to use it
 
 1. **Pick a market** from the top dropdown.
