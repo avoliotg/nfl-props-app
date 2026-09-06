@@ -58,7 +58,11 @@ def prob_over(market, projection, line, games_played):
 
 
 def american_breakeven(odds):
-    """Vig-adjusted breakeven probability implied by American odds (0-1)."""
+    """RAW implied probability from American odds (0-1), vig included.
+
+    Not vig-adjusted despite the old docstring. The two sides sum to more
+    than 1 by the hold. edge_calc removes it when both sides are real.
+    """
     if odds is None:
         return None
     odds = float(odds)
@@ -85,6 +89,20 @@ def edge_calc(market, projection, line, games_played,
 
     be_o = american_breakeven(over_odds)
     be_u = american_breakeven(under_odds)
+
+    # Remove the hold. Raw implied probabilities sum to >1, so charging each
+    # side its own raw number bills the full vig twice. Normalising so they
+    # sum to 1 gives each side its fair breakeven: -114/-114 becomes 0.500
+    # rather than 0.5327 each.
+    #
+    # ONLY when both sides are real. If one was defaulted to -110 (approx),
+    # normalising would corrupt the side we do know: an anytime-TD over at
+    # +250 would go from a correct 0.286 to a wrong 0.353.
+    if not approx and be_o is not None and be_u is not None:
+        total = be_o + be_u
+        if total > 0:
+            be_o, be_u = be_o / total, be_u / total
+
     edge_o = (p_o - be_o) * 100
     edge_u = (p_u - be_u) * 100
 
