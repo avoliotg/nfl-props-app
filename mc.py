@@ -5,6 +5,19 @@ Market-agnostic: the sigma rule per market is the only market-specific input.
 """
 from scipy.stats import norm
 
+import mc_pricing
+
+# Calibrated pricing, validated 2025 OOS: P(over) error fell from ~5.0 pp to
+# ~1.6 pp across markets. mc_pricing owns the distribution family, sigma rule
+# and zero gate per market. The edge/tier interface below is unchanged.
+#
+# Season-stage multiplier is OFF for now. Under the old symmetric normal,
+# widening sigma left P(over) at the money at 0.50. Under a mean-preserving
+# gamma it lowers the median, so 1.5x adds ~6 pp of under-tilt that has never
+# been scored against outcomes. The bake-off validated 1.0x only. Revisit once
+# the early-season interaction is tested on weeks 1-4 of 2023-2025.
+USE_STAGE_MULTIPLIER = False
+
 # Per-market baseline sigma rules (from out-of-sample residual analysis).
 # proportional: sigma = k * projection ; flat: fixed sigma.
 # anytime_td is intentionally absent — it's already a calibrated probability.
@@ -18,6 +31,12 @@ SIGMA_RULES = {
 
 
 def base_sigma(market, projection):
+    """Calibrated sigma. Sub-proportional: scales like proj**0.76, not proj."""
+    return mc_pricing.sigma_for(market, projection, 1.0)
+
+
+def legacy_base_sigma(market, projection):
+    """The old hand-set rule. Kept for comparison and rollback."""
     rule = SIGMA_RULES[market]
     if rule["type"] == "proportional":
         return rule["k"] * projection
@@ -34,10 +53,8 @@ def stage_multiplier(games_played):
 def prob_over(market, projection, line, games_played):
     """P(actual > line) via a normal curve, sigma inflated by season stage.
     Returns probability 0-1, or None if uncomputable."""
-    sigma = base_sigma(market, projection) * stage_multiplier(games_played)
-    if sigma <= 0:
-        return None
-    return float(1 - norm.cdf(line, loc=projection, scale=sigma))
+    mult = stage_multiplier(games_played) if USE_STAGE_MULTIPLIER else 1.0
+    return mc_pricing.p_over(market, projection, line, stage_mult=mult)
 
 
 def american_breakeven(odds):
