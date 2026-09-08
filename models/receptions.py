@@ -12,6 +12,21 @@ SEASONS = [2022, 2023, 2024, 2025, 2026]
 LEAN_FEATS = ["target_share_roll", "targets_roll", "snap_roll",
               "team_spread", "total_line"]
 
+# Per-feature EWMA halflives, in games. Replaces rolling(6).mean().
+#
+# Selected on 2024 and confirmed ONCE on 2025: paired bootstrap -0.024 MAE,
+# CI [-0.035, -0.013] vs the old 6-game window, with corr 0.431 -> 0.453.
+#
+# Note targets_roll wants 3 here while the receiving model wants 12, which is
+# why each market carries its own dict rather than sharing one. Receptions is a
+# count on a compressed scale, so recent volume matters more and long memory
+# adds little.
+HL = {
+    "target_share_roll": 2.0,
+    "targets_roll": 3.0,
+    "snap_roll": 2.0,
+}
+
 # receptions are small numbers — tiers are in CATCHES, not yards
 GAP_ANCHORS = [(0, 0.49), (0.5, 0.55), (1.0, 0.60), (2.0, 0.66), (4.0, 0.70)]
 
@@ -23,8 +38,10 @@ def build_dataset():
     rec = rec.sort_values(["player_id", "season", "week"]).reset_index(drop=True)
 
     for col in ["targets", "target_share"]:
+        hl = HL[f"{col}_roll"]
         rec[f"{col}_roll"] = (rec.groupby("player_id")[col]
-                              .transform(lambda s: s.shift(1).rolling(6, min_periods=1).mean()))
+                              .transform(lambda s, h=hl: s.shift(1)
+                                         .ewm(halflife=h, min_periods=1).mean()))
 
     snaps = data_utils.load_snap_counts(SEASONS)
     snaps_s = snaps[["season", "week", "team", "player", "offense_pct"]].copy()
@@ -38,7 +55,8 @@ def build_dataset():
     rec = rec.merge(snaps_s, on=["season", "week", "team", "_join_name"], how="left")
     rec = rec.drop(columns=["_join_name"])
     rec["snap_roll"] = (rec.groupby("player_id")["offense_pct"]
-                        .transform(lambda s: s.shift(1).rolling(6, min_periods=1).mean()))
+                        .transform(lambda s: s.shift(1)
+                                   .ewm(halflife=HL["snap_roll"], min_periods=1).mean()))
 
     games = data_utils.load_schedules(SEASONS)
     home = games[["season", "week", "home_team", "spread_line", "total_line"]].rename(
@@ -94,9 +112,10 @@ def project_week(season, week, min_targets=1.5):
     cols = [c for c in cols if c in wk.columns]
     return wk[cols].sort_values("projection", ascending=False).reset_index(drop=True)
 
+
 def build_upcoming_week(season, week):
     """Manufacture player-week rows for a game not yet played (e.g. Week 1),
-    bridging rolling features from the prior season. Fallback when build_dataset()
+    bridging rolling features from prior seasons. Fallback when build_dataset()
     has no rows for the requested week."""
     import nflreadpy as nfl
 
@@ -107,15 +126,32 @@ def build_upcoming_week(season, week):
         columns={"gsis_id": "player_id"})
     ros = ros.dropna(subset=["player_id"]).drop_duplicates(subset=["player_id"])
 
+    # ALL prior seasons, not just one. The EWMA carries across the offseason,
+    # and carry-over beat a per-season reset by +0.034 MAE (CI [+0.018,+0.050]).
+    # Bridging from a single season was also the source of a train/serve
+    # mismatch: 13-15 players of 263 had features that did not match what
+    # build_dataset produced for the same week.
     rec = build_dataset()
-    prior = rec[rec["season"] == season - 1].sort_values(["player_id", "week"])
+    prior = rec[rec["season"] <= season - 1].sort_values(
+        ["player_id", "season", "week"])
+
+    def _ewm_last(g, col, key):
+        """Final EWMA value over all prior games.
+
+        build_dataset computes shift(1).ewm(...), so at a week-1 row that equals
+        the unshifted EWMA through the last prior game. Computing it identically
+        here is what keeps training and serving features the same; divergence
+        would be train/serve skew, which yields plausible-looking wrong numbers
+        rather than an error.
+        """
+        v = g[col].ewm(halflife=HL[key], min_periods=1).mean()
+        return float(v.iloc[-1]) if len(v) else float("nan")
 
     def _bridge(g):
-        last6 = g.tail(6)
         return pd.Series({
-            "targets_roll": last6["targets"].mean(),
-            "target_share_roll": last6["target_share"].mean(),
-            "snap_roll": last6["offense_pct"].mean(),
+            "targets_roll": _ewm_last(g, "targets", "targets_roll"),
+            "target_share_roll": _ewm_last(g, "target_share", "target_share_roll"),
+            "snap_roll": _ewm_last(g, "offense_pct", "snap_roll"),
             "player_display_name": g.iloc[-1]["player_display_name"],
         })
     bridged = (prior.groupby("player_id", group_keys=False)
