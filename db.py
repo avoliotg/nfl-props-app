@@ -92,12 +92,23 @@ def _normalize_market(raw):
     return MARKET_MAP.get(key)
 
 def _norm_name(name):
-    """Normalize a player name for matching: lowercase, strip whitespace.
-    Protects against capitalization/spacing differences between CSV extraction
-    and official roster spelling (e.g. 'Demario Douglas' vs 'DeMario Douglas')."""
+    """Normalize a player name for matching.
+
+    Lowercase, strip whitespace, then remove punctuation and generational
+    suffixes, because the same player is spelled differently by FanDuel and
+    nflverse:
+        'D.J. Moore'        vs 'DJ Moore'          (periods)
+        'DeVon Achane'      vs "De'Von Achane"     (apostrophe)
+        'Michael Pittman Jr.' vs 'Michael Pittman' (suffix)
+    Curly apostrophes from screenshot extraction are handled too.
+    """
     if name is None:
         return ""
-    return str(name).strip().lower()
+    s = str(name).strip().lower()
+    for ch in (".", "'", "\u2019", "\u2018", "`", "-", ","):
+        s = s.replace(ch, "")
+    parts = [p for p in s.split() if p not in ("jr", "sr", "ii", "iii", "iv", "v")]
+    return " ".join(parts)
 
 
 def import_lines(rows, season, week, user, sport="NFL"):
