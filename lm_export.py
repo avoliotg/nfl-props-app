@@ -156,3 +156,21 @@ def to_pdf(frames, season, week):
             pdf.savefig(fig, facecolor="white")
             plt.close(fig)
     return buf.getvalue()
+
+def to_zip(frames, season, week, dpi=170):
+    """Every market as a separate PNG inside one zip.
+
+    Better than a single tall image for sharing: Reddit takes these as a
+    gallery, and each market stays readable on its own.
+    """
+    import zipfile
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        for market, df in frames.items():
+            if df is None or len(df) == 0:
+                continue
+            safe = "".join(c if (c.isalnum() or c in "-_") else "_"
+                           for c in _ascii(market)).strip("_") or "market"
+            name = f"opalscales_{safe}_{season}_wk{week}.png"
+            z.writestr(name, to_png(df, market, season, week, dpi=dpi))
+    return buf.getvalue()

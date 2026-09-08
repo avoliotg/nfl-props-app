@@ -95,6 +95,7 @@ st.divider()
 tab_labels = ["📋 Board", "📊 Scorecard", "🎯 Top Plays", "🔍 Market History", "📈 Line Movement", "📖 Guide"]
 if IS_ADMIN:
     tab_labels.append("📥 Import")
+    tab_labels.append("📤 Export")
 _tabs = st.tabs(tab_labels)
 tab_board, tab_scorecard, tab_top, tab_player, tab_movement, tab_guide = _tabs[0], _tabs[1], _tabs[2], _tabs[3], _tabs[4], _tabs[5]
 
@@ -679,7 +680,6 @@ with tab_movement:
                   "Strong": "🟢 Strong", "Max": "🔥 Max"}
     TA_EMOJI = {"toward": "🟢 toward", "away": "🔴 away", "flat": "⚪ flat"}
 
-    export_frames = {}
     for mkt_key, mkt_label in MARKETS.items():
         st.markdown(f"#### {mkt_key}")
         mv = db.get_line_movement(lm_season, lm_week, mkt_label, st.session_state.user)
@@ -712,10 +712,6 @@ with tab_movement:
         for numcol in ["Proj", "Edge", f"First {line_word}", f"Latest {line_word}", "Move"]:
             grid[numcol] = pd.to_numeric(grid[numcol], errors="coerce").astype("float64")
 
-        exp = grid.drop(columns=["Bet?"]).copy()
-        exp["Trend"] = exp["Trend"].map(
-            lambda s: ", ".join(f"{v:g}" for v in s) if isinstance(s, (list, tuple)) else "")
-        export_frames[mkt_key] = exp
 
         edited = st.data_editor(
             grid, width='stretch', hide_index=True,
@@ -773,43 +769,6 @@ with tab_movement:
                 st.line_chart(chart_df)
                 st.caption(f"{picked}: {len(series)} snapshot(s) captured, "
                            f"from {row['first_line']:.1f} to {row['latest_line']:.1f} {line_word.lower()}.")
-    if export_frames:
-        import io
-
-        def _lm_excel(frames):
-            bad = set(':\\/?*[]')
-            buf = io.BytesIO()
-            with pd.ExcelWriter(buf, engine="openpyxl") as xl:
-                for name, df in frames.items():
-                    safe = "".join(c for c in str(name) if c not in bad)[:31] or "Sheet"
-                    df.to_excel(xl, sheet_name=safe, index=False)
-            return buf.getvalue()
-
-        st.download_button(
-            "⬇️ Export all markets (Excel)",
-            data=_lm_excel(export_frames),
-            file_name=f"opalscales_line_movement_{lm_season}_wk{lm_week}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            key="lm_export_xlsx")
-
-        import lm_export
-        st.markdown("##### Image export (for sharing)")
-        png_mkt = st.selectbox("Market to render", list(export_frames),
-                               key="lm_png_mkt")
-        ec1, ec2 = st.columns(2)
-        with ec1:
-            st.download_button(
-                "🖼️ Download PNG",
-                data=lm_export.to_png(export_frames[png_mkt], png_mkt,
-                                      lm_season, lm_week),
-                file_name=f"opalscales_{png_mkt}_{lm_season}_wk{lm_week}.png".replace(" ", "_"),
-                mime="image/png", key="lm_export_png")
-        with ec2:
-            st.download_button(
-                "📄 Download PDF (all markets)",
-                data=lm_export.to_pdf(export_frames, lm_season, lm_week),
-                file_name=f"opalscales_line_movement_{lm_season}_wk{lm_week}.pdf",
-                mime="application/pdf", key="lm_export_pdf")
             
                        # ============ GUIDE ============
 with tab_guide:
@@ -1064,3 +1023,131 @@ if IS_ADMIN:
                         }
                         st.cache_data.clear()
                         st.rerun()
+
+# ============ EXPORT ============
+if IS_ADMIN:
+    with _tabs[7]:
+        st.subheader("📤 Export Line Movement")
+        st.caption("Pick games and markets, then download. Teams come from the "
+                   "model's projections, kickoff slots from the schedule.")
+
+        import game_export, lm_export
+
+        xc1, xc2 = st.columns(2)
+        with xc1:
+            x_seasons = receiving.available_seasons()
+            x_season = st.selectbox("Season", x_seasons,
+                                    index=len(x_seasons) - 1, key="x_season")
+        with xc2:
+            x_weeks = receiving.available_weeks(x_season)
+            x_week = st.selectbox("Week", x_weeks, index=len(x_weeks) - 1,
+                                  key="x_week")
+
+        games = game_export.load_games(x_season, x_week)
+        if len(games) == 0:
+            st.warning("No schedule found for that week.")
+        else:
+            slots = [s for s in game_export.SLOT_ORDER if s in set(games["slot"])]
+            picked_slots = st.multiselect("Kickoff slots", slots, default=slots,
+                                          key="x_slots")
+            avail = games[games["slot"].isin(picked_slots)]
+            lab = {f"{r['matchup']}  ({r['slot']})": r["matchup"]
+                   for _, r in avail.iterrows()}
+            picked_labels = st.multiselect(
+                f"Games ({len(lab)} in these slots)", list(lab),
+                default=list(lab), key="x_games")
+            picked = [lab[l] for l in picked_labels]
+
+            x_markets = st.multiselect("Markets", list(MARKETS.keys()),
+                                       default=list(MARKETS.keys()),
+                                       key="x_markets")
+            inc_un = st.checkbox("Include players with no matched game",
+                                 value=False, key="x_unassigned")
+
+            frames, notes = {}, []
+            for mkt_name in x_markets:
+                mkt_key = MARKETS[mkt_name]
+                mv = db.get_line_movement(x_season, x_week, mkt_key,
+                                          st.session_state.user)
+                if len(mv) == 0:
+                    notes.append(f"{mkt_name}: no snapshots yet")
+                    continue
+                is_td = (mkt_key == "anytime_td")
+                lw = "Prob%" if is_td else "Line"
+                mv = mv.copy()
+                mv["abs_move"] = mv["line_move"].abs().fillna(0)
+                mv = mv.sort_values("abs_move", ascending=False)
+                g = pd.DataFrame({
+                    "Player": mv["player"],
+                    "Tier": mv["latest_tier"].fillna(""),
+                    "vs. Model": mv["toward_away"].fillna(""),
+                    "Proj": mv["raw_projection"],
+                    "Edge": mv["latest_edge"],
+                    "Side": mv["latest_side"].replace("", "—") if not is_td else "—",
+                    f"First {lw}": mv["first_line"],
+                    f"Latest {lw}": mv["latest_line"],
+                    "Move": mv["line_move"],
+                    "Snaps": mv["snapshots"],
+                })
+                # rushing carries QB rushing players through a second model
+                extra = [qb_rushing] if mkt_key == "rushing" else []
+                tmap = game_export.team_map(x_season, x_week, mkt_key, MODULES,
+                                            db._norm_name, extra_modules=extra)
+                g, n_un, _ = game_export.attach_games(g, "Player", tmap, games,
+                                                      db._norm_name)
+                g = game_export.filter_games(g, picked, include_unassigned=inc_un)
+                if n_un:
+                    notes.append(f"{mkt_name}: {n_un} player(s) had no team match")
+                if len(g):
+                    frames[mkt_name] = g.reset_index(drop=True)
+
+            total = sum(len(v) for v in frames.values())
+            st.markdown(f"**{total} row(s)** across {len(frames)} market(s)")
+            for n in notes:
+                st.caption(n)
+
+            if frames:
+                for name, fr in frames.items():
+                    with st.expander(f"{name} ({len(fr)} rows)"):
+                        st.dataframe(fr, width='stretch', hide_index=True)
+
+                import io
+
+                def _x_excel(fs):
+                    bad = set(':\\/?*[]')
+                    buf = io.BytesIO()
+                    with pd.ExcelWriter(buf, engine="openpyxl") as xl:
+                        for nm, fr in fs.items():
+                            safe = "".join(c for c in str(nm) if c not in bad)[:31] or "Sheet"
+                            fr.to_excel(xl, sheet_name=safe, index=False)
+                    return buf.getvalue()
+
+                stamp = f"{x_season}_wk{x_week}"
+                d1, d2, d3 = st.columns(3)
+                with d1:
+                    st.download_button(
+                        "⬇️ Excel (all markets)", data=_x_excel(frames),
+                        file_name=f"opalscales_{stamp}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key="x_xlsx")
+                with d2:
+                    st.download_button(
+                        "🖼️ PNGs (all markets, zip)",
+                        data=lm_export.to_zip(frames, x_season, x_week),
+                        file_name=f"opalscales_pngs_{stamp}.zip",
+                        mime="application/zip", key="x_zip")
+                with d3:
+                    st.download_button(
+                        "📄 PDF (all markets)",
+                        data=lm_export.to_pdf(frames, x_season, x_week),
+                        file_name=f"opalscales_{stamp}.pdf",
+                        mime="application/pdf", key="x_pdf")
+
+                with st.expander("Single market PNG"):
+                    png_pick = st.selectbox("Market", list(frames), key="x_png_mkt")
+                    st.download_button(
+                        "🖼️ Download",
+                        data=lm_export.to_png(frames[png_pick], png_pick,
+                                              x_season, x_week),
+                        file_name=f"opalscales_{png_pick}_{stamp}.png".replace(" ", "_"),
+                        mime="image/png", key="x_png")
