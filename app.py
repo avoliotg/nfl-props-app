@@ -3,6 +3,16 @@ import pandas as pd
 import betlog
 import db
 import mc
+
+
+def _default_season():
+    """NFL seasons are labelled by their starting year and run Sep-Feb, so
+    January and February belong to the prior year's season."""
+    from datetime import date
+    t = date.today()
+    return t.year - 1 if t.month <= 2 else t.year
+
+
 ADMIN_EMAIL = "avoliotg@gmail.com"
 OPAL_BANNER = ("📣 **Note from OpalScales:** Be wary of huge edges early in the season, "
                "they're often the model's early season blind spots, not real value. See the Guide for details.")
@@ -669,6 +679,7 @@ with tab_movement:
                   "Strong": "🟢 Strong", "Max": "🔥 Max"}
     TA_EMOJI = {"toward": "🟢 toward", "away": "🔴 away", "flat": "⚪ flat"}
 
+    export_frames = {}
     for mkt_key, mkt_label in MARKETS.items():
         st.markdown(f"#### {mkt_key}")
         mv = db.get_line_movement(lm_season, lm_week, mkt_label, st.session_state.user)
@@ -700,6 +711,11 @@ with tab_movement:
         })
         for numcol in ["Proj", "Edge", f"First {line_word}", f"Latest {line_word}", "Move"]:
             grid[numcol] = pd.to_numeric(grid[numcol], errors="coerce").astype("float64")
+
+        exp = grid.drop(columns=["Bet?"]).copy()
+        exp["Trend"] = exp["Trend"].map(
+            lambda s: ", ".join(f"{v:g}" for v in s) if isinstance(s, (list, tuple)) else "")
+        export_frames[mkt_key] = exp
 
         edited = st.data_editor(
             grid, width='stretch', hide_index=True,
@@ -757,6 +773,43 @@ with tab_movement:
                 st.line_chart(chart_df)
                 st.caption(f"{picked}: {len(series)} snapshot(s) captured, "
                            f"from {row['first_line']:.1f} to {row['latest_line']:.1f} {line_word.lower()}.")
+    if export_frames:
+        import io
+
+        def _lm_excel(frames):
+            bad = set(':\\/?*[]')
+            buf = io.BytesIO()
+            with pd.ExcelWriter(buf, engine="openpyxl") as xl:
+                for name, df in frames.items():
+                    safe = "".join(c for c in str(name) if c not in bad)[:31] or "Sheet"
+                    df.to_excel(xl, sheet_name=safe, index=False)
+            return buf.getvalue()
+
+        st.download_button(
+            "⬇️ Export all markets (Excel)",
+            data=_lm_excel(export_frames),
+            file_name=f"opalscales_line_movement_{lm_season}_wk{lm_week}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="lm_export_xlsx")
+
+        import lm_export
+        st.markdown("##### Image export (for sharing)")
+        png_mkt = st.selectbox("Market to render", list(export_frames),
+                               key="lm_png_mkt")
+        ec1, ec2 = st.columns(2)
+        with ec1:
+            st.download_button(
+                "🖼️ Download PNG",
+                data=lm_export.to_png(export_frames[png_mkt], png_mkt,
+                                      lm_season, lm_week),
+                file_name=f"opalscales_{png_mkt}_{lm_season}_wk{lm_week}.png".replace(" ", "_"),
+                mime="image/png", key="lm_export_png")
+        with ec2:
+            st.download_button(
+                "📄 Download PDF (all markets)",
+                data=lm_export.to_pdf(export_frames, lm_season, lm_week),
+                file_name=f"opalscales_line_movement_{lm_season}_wk{lm_week}.pdf",
+                mime="application/pdf", key="lm_export_pdf")
             
                        # ============ GUIDE ============
 with tab_guide:
@@ -972,17 +1025,21 @@ if IS_ADMIN:
         ic1, ic2 = st.columns(2)
         with ic1:
             imp_season = st.number_input("Season", min_value=2020, max_value=2030,
-                                         value=2025, step=1, key="imp_season")
+                                         value=_default_season(), step=1,
+                                         key="imp_season")
         with ic2:
             imp_week = st.number_input("Week", min_value=1, max_value=25,
                                        value=1, step=1, key="imp_week")
-
         csv_text = st.text_area(
             "Paste CSV here", height=200, key="imp_csv",
             placeholder="player,market,line,over_odds,under_odds\n"
                         "Ja'Marr Chase,receiving_yards,74.5,-115,-105\n"
                         "...")
+        def _clear_imp_csv():
+            st.session_state["imp_csv"] = ""
 
+        st.button("🧹 Clear paste box", key="imp_clear_btn",
+                  on_click=_clear_imp_csv)
         if st.button("📥 Import", type="primary", key="imp_btn"):
             if not csv_text.strip():
                 st.warning("Paste some CSV first.")
