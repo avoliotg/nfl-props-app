@@ -6,3 +6,4 @@ scipy
 nflreadpy
 supabase
 openpyxl
+matplotlib
