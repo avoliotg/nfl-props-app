@@ -45,3 +45,42 @@ def load_snap_counts(seasons):
 def load_pbp(seasons):
     df, _ = _try_seasons(nfl.load_pbp, seasons)
     return df
+
+
+# nflverse tables disagree on nicknames vs legal names, which suffix stripping
+# cannot reconcile. Both spellings map to one canonical key. Keys and values are
+# already normalized (lowercase, punctuation and suffixes stripped), so add any
+# new entries in that form.
+_NAME_ALIASES = {
+    "chig okonkwo": "chigoziem okonkwo",
+    "kenny gainwell": "kenneth gainwell",
+    "gabe davis": "gabriel davis",
+    "bam knight": "zonovan knight",
+    "dee eskridge": "dwayne eskridge",
+    "mike woods": "michael woods",
+}
+
+
+def norm_join_name(s):
+    """Normalize a name column for joining across nflverse tables.
+
+    The stats and snap-count tables format names differently. Periods were
+    already handled ("DK Metcalf" vs "D.K. Metcalf"), but SUFFIXES were not,
+    which silently dropped 546 rows (4.1%) from receiving: Michael Pittman vs
+    Michael Pittman Jr., Deebo Samuel Sr., Chris Godwin Jr., Brian Thomas Jr.,
+    Luther Burden III and others. A failed join left offense_pct null, so
+    snap_roll came out all-NaN, and because snap_roll is a LEAN_FEAT the row
+    was dropped from the dataset entirely.
+
+    Nicknames are handled separately via _NAME_ALIASES, since no string rule
+    turns "Chig Okonkwo" into "Chigoziem Okonkwo".
+
+    Takes a pandas Series, returns a pandas Series.
+    """
+    out = (s.astype(str)
+           .str.replace("[.'\u2019\u2018`,-]", "", regex=True)
+           .str.replace(r"\s+", " ", regex=True)
+           .str.strip()
+           .str.lower())
+    out = out.str.replace(r"\s+(jr|sr|ii|iii|iv|v)$", "", regex=True)
+    return out.replace(_NAME_ALIASES)

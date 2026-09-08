@@ -32,17 +32,10 @@ def build_dataset():
     snaps = data_utils.load_snap_counts(SEASONS)
     snaps_s = snaps[["season", "week", "team", "player", "offense_pct"]].copy()
 
-    # normalize names for joining (stats and snap tables format names differently,
-    # e.g. "DK Metcalf" vs "D.K. Metcalf") — strip periods, extra spaces, lowercase
-    def _norm_name(s):
-        return (s.astype(str)
-                 .str.replace(".", "", regex=False)
-                 .str.replace(r"\s+", " ", regex=True)
-                 .str.strip()
-                 .str.lower())
-
-    rec["_join_name"] = _norm_name(rec["player_display_name"])
-    snaps_s["_join_name"] = _norm_name(snaps_s["player"])
+    # Shared normalizer: also strips suffixes, which the old local version did
+    # not. That silently dropped 546 rows (4.1%) whose snap join failed.
+    rec["_join_name"] = data_utils.norm_join_name(rec["player_display_name"])
+    snaps_s["_join_name"] = data_utils.norm_join_name(snaps_s["player"])
     snaps_s = snaps_s[["season", "week", "team", "_join_name", "offense_pct"]]
 
     rec = rec.merge(snaps_s, on=["season", "week", "team", "_join_name"], how="left")
