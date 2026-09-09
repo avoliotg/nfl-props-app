@@ -680,6 +680,27 @@ with tab_movement:
                   "Strong": "🟢 Strong", "Max": "🔥 Max"}
     TA_EMOJI = {"toward": "🟢 toward", "away": "🔴 away", "flat": "⚪ flat"}
 
+    import game_export
+    lm_games = game_export.load_games(lm_season, lm_week)
+    if len(lm_games) == 0:
+        st.caption("No schedule found for that week, showing all players.")
+        lm_picked, lm_filter_on = [], False
+    else:
+        lm_slot_opts = [s for s in game_export.SLOT_ORDER
+                        if s in set(lm_games["slot"])]
+        lm_slots = st.multiselect("Kickoff slots", lm_slot_opts,
+                                  default=lm_slot_opts, key="lm_slots")
+        lm_avail = lm_games[lm_games["slot"].isin(lm_slots)]
+        lm_lab = {f"{r['matchup']}  ({r['slot']})": r["matchup"]
+                  for _, r in lm_avail.iterrows()}
+        lm_picked_labels = st.multiselect(
+            f"Games ({len(lm_lab)} in these slots)", list(lm_lab),
+            default=list(lm_lab), key="lm_games_pick")
+        lm_picked = [lm_lab[l] for l in lm_picked_labels]
+        lm_filter_on = True
+        st.caption("Filtering applies to every market below. Rows whose player "
+                   "could not be matched to a team are hidden while filtering.")
+
     for mkt_key, mkt_label in MARKETS.items():
         st.markdown(f"#### {mkt_key}")
         mv = db.get_line_movement(lm_season, lm_week, mkt_label, st.session_state.user)
@@ -695,8 +716,30 @@ with tab_movement:
         mv["abs_move"] = mv["line_move"].abs().fillna(0)
         mv = mv.sort_values("abs_move", ascending=False).reset_index(drop=True)
 
+        # Attach team/game, then filter. Filtering mv itself (rather than the
+        # display grid) keeps the Bet?/Save path consistent: savable rows and
+        # the checkbox map both derive from mv, so a filtered table cannot try
+        # to save a player who is not visible.
+        if lm_filter_on:
+            extra = [qb_rushing] if mkt_label == "rushing" else []
+            tmap = game_export.team_map(lm_season, lm_week, mkt_label, MODULES,
+                                        db._norm_name, extra_modules=extra)
+            mv, n_unmatched, _ = game_export.attach_games(
+                mv, "player", tmap, lm_games, db._norm_name)
+            mv = game_export.filter_games(mv, lm_picked, include_unassigned=False)
+            if len(mv) == 0:
+                st.caption(f"No {mkt_key} rows in the selected games.")
+                continue
+        else:
+            mv["Game"] = ""
+
+        cap_disp = (pd.to_datetime(mv["latest_captured"], errors="coerce", utc=True)
+                    .dt.tz_convert("America/New_York")
+                    .dt.strftime("%m/%d %I:%M%p").fillna("—"))
+
         grid = pd.DataFrame({
             "Player": mv["player"],
+            "Game": mv["Game"],
             "Tier": mv["latest_tier"].map(lambda t: TIER_EMOJI.get(t, "—")),
             "vs. Model": mv["toward_away"].map(lambda t: TA_EMOJI.get(t, "—")),
             "Proj": mv["raw_projection"],
@@ -705,19 +748,20 @@ with tab_movement:
             f"First {line_word}": mv["first_line"],
             f"Latest {line_word}": mv["latest_line"],
             "Move": mv["line_move"],
-            "Snaps": mv["snapshots"],
+            "Line Captures": mv["snapshots"],
             "Trend": mv["series"],
+            "Captured": cap_disp,
             "Bet?": False,
         })
         for numcol in ["Proj", "Edge", f"First {line_word}", f"Latest {line_word}", "Move"]:
             grid[numcol] = pd.to_numeric(grid[numcol], errors="coerce").astype("float64")
-
 
         edited = st.data_editor(
             grid, width='stretch', hide_index=True,
             disabled=[c for c in grid.columns if c != "Bet?"],
             column_config={
                 "Player": st.column_config.TextColumn("Player", pinned=True, width="medium"),
+                "Game": st.column_config.TextColumn("Game", width="small"),
                 "Tier": st.column_config.TextColumn("Tier", width="small"),
                 "Proj": st.column_config.NumberColumn("Proj", format="%.1f", width="small"),
                 "Edge": st.column_config.NumberColumn("Edge", format="%+.1f", width="small"),
@@ -727,7 +771,8 @@ with tab_movement:
                 f"Latest {line_word}": st.column_config.NumberColumn(f"Latest {line_word}", format="%.1f", width="small"),
                 "Move": st.column_config.NumberColumn("Move", format="%+.1f", width="small"),
                 "vs. Model": st.column_config.TextColumn("vs. Model", width="small"),
-                "Snaps": st.column_config.NumberColumn("Snaps", format="%d", width="small"),
+                "Line Captures": st.column_config.NumberColumn("Line Captures", format="%d", width="small"),
+                "Captured": st.column_config.TextColumn("Captured", width="small"),
                 "Bet?": st.column_config.CheckboxColumn("Bet?", width="small"),
             },
             key=f"movement_editor_{mkt_label}")
@@ -1087,7 +1132,7 @@ if IS_ADMIN:
                     f"First {lw}": mv["first_line"],
                     f"Latest {lw}": mv["latest_line"],
                     "Move": mv["line_move"],
-                    "Snaps": mv["snapshots"],
+                    "Line Captures": mv["snapshots"],
                 })
                 # rushing carries QB rushing players through a second model
                 extra = [qb_rushing] if mkt_key == "rushing" else []

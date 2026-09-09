@@ -7,3 +7,4 @@ nflreadpy
 supabase
 openpyxl
 matplotlib
+tzdata
