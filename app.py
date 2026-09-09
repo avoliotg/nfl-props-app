@@ -777,6 +777,16 @@ with tab_movement:
             },
             key=f"movement_editor_{mkt_label}")
 
+        with st.expander(f"📋 Copy {mkt_key} as text"):
+            copy_df = grid.drop(columns=["Trend", "Bet?"])
+            fmt = st.radio("Format", ["Markdown (Reddit)", "TSV (Sheets/Excel)"],
+                           horizontal=True, key=f"copy_fmt_{mkt_label}")
+            if fmt.startswith("Markdown"):
+                txt = copy_df.to_markdown(index=False)
+            else:
+                txt = copy_df.to_csv(index=False, sep="\t")
+            st.code(txt, language=None)
+
         if st.button(f"💾 Save {mkt_key} to Log", key=f"movement_save_btn_{mkt_label}"):
             savable = mv[mv["latest_edge"].notna()].copy()
             bet_flags = edited.set_index("Player")["Bet?"].to_dict()

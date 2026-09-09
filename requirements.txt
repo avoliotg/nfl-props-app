@@ -8,3 +8,4 @@ supabase
 openpyxl
 matplotlib
 tzdata
+tabulate
