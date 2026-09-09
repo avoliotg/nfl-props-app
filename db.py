@@ -297,7 +297,15 @@ def get_line_movement(season, week, market, user, sport="NFL"):
             return "OVER"
         elif proj < line:
             return "UNDER"
-        return "—"
+        # Exact tie: proj == line cannot be resolved by comparison, but the
+        # model still has an opinion. Outcomes are right-skewed, so P(over) at
+        # the money is about 0.41 for receiving, meaning the under is favoured.
+        # Falling through to "—" left rows like Breece Hall (proj 20.5, line
+        # 20.5) showing a +10.5 Max edge with no side.
+        p_over = mc.prob_over(market, float(proj), float(line), 0)
+        if p_over is None:
+            return "—"
+        return "OVER" if p_over > 0.5 else "UNDER"
 
     def _td_side(proj, implied):
         if proj is None or implied is None or pd.isna(proj) or pd.isna(implied):
