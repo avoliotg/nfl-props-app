@@ -12,7 +12,7 @@ def _default_season():
     t = date.today()
     return t.year - 1 if t.month <= 2 else t.year
 
-def _login_backdrop(path="assets/opal_banner.jpg"):
+def _login_backdrop(path="assets/opal_banner.jpg", top=0.38, bottom=0.55):
     """Set the login page background to the opal image, dimmed for legibility.
 
     Streamlit has no background-image API, so this injects CSS and inlines the
@@ -36,7 +36,7 @@ def _login_backdrop(path="assets/opal_banner.jpg"):
         <style>
         .stApp {{
             background-image:
-                linear-gradient(rgba(14,12,20,0.38), rgba(14,12,20,0.55)),
+                linear-gradient(rgba(14,12,20,{top}), rgba(14,12,20,{bottom})),
                 url("data:image/jpeg;base64,{b64}");
             background-size: cover;
             /* 30% keeps the orb in frame on narrow screens; `fixed` breaks on
@@ -97,6 +97,10 @@ if st.session_state.user is None:
     _show_login()
     st.stop()
 IS_ADMIN = st.session_state.user["email"] == ADMIN_EMAIL
+# Same artwork behind the app, dimmed far harder than the login page. The
+# interior is dense data and the tier / toward-away colours carry meaning, so
+# this needs to be a texture rather than a picture.
+_login_backdrop(top=0.75, bottom=0.85)
 with st.sidebar:
     st.caption(f"Logged in as {st.session_state.user['email']}")
     if st.button("Log out"):
