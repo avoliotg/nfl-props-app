@@ -12,6 +12,40 @@ def _default_season():
     t = date.today()
     return t.year - 1 if t.month <= 2 else t.year
 
+def _login_backdrop(path="assets/opal_banner.jpg"):
+    """Set the login page background to the opal image, dimmed for legibility.
+
+    Streamlit has no background-image API, so this injects CSS and inlines the
+    file as base64. The image is compressed first because it is embedded in the
+    page on every load. A dark gradient sits over it so the form stays readable
+    regardless of what the artwork is doing underneath.
+
+    Targets .stApp, which has been a stable selector. If a Streamlit upgrade
+    ever breaks this, the page still works and just loses the backdrop.
+    """
+    import base64
+    import os
+    if not os.path.exists(path):
+        return
+    try:
+        b64 = base64.b64encode(open(path, "rb").read()).decode()
+    except Exception:
+        return
+    st.markdown(
+        f"""
+        <style>
+        .stApp {{
+            background-image:
+                linear-gradient(rgba(14,12,20,0.38), rgba(14,12,20,0.55)),
+                url("data:image/jpeg;base64,{b64}");
+            background-size: cover;
+            background-position: center;
+            background-attachment: fixed;
+        }}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
 
 ADMIN_EMAIL = "avoliotg@gmail.com"
 OPAL_BANNER = ("📣 **Note from OpalScales:** Be wary of huge edges early in the season, "
@@ -27,6 +61,7 @@ if "user" not in st.session_state:
 
 
 def _show_login():
+    _login_backdrop()
     st.title("🔮 OpalScales")
     st.caption("Log in or sign up to continue.")
     tab_login, tab_signup = st.tabs(["Log In", "Sign Up"])
