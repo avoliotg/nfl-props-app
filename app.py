@@ -39,8 +39,11 @@ def _login_backdrop(path="assets/opal_banner.jpg"):
                 linear-gradient(rgba(14,12,20,0.38), rgba(14,12,20,0.55)),
                 url("data:image/jpeg;base64,{b64}");
             background-size: cover;
-            background-position: center;
-            background-attachment: fixed;
+            /* 30% keeps the orb in frame on narrow screens; `fixed` breaks on
+               iOS Safari, which sizes the background to the viewport rather
+               than the document and pushes the orb out of view. */
+            background-position: 30% center;
+            background-repeat: no-repeat;
         }}
         </style>
         """,
