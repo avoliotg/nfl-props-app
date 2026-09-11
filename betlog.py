@@ -85,9 +85,23 @@ def append_entries(entries: pd.DataFrame, user):
     return load_log(user)
 
 
-def grade_log(actuals_lookup, is_prob=False, user=None):
-    """Fill in result + outcome for logged picks that don't have a result yet.
-    actuals_lookup(season, week, player) -> actual result, or None."""
+def grade_log(actuals_lookup, is_prob=False, user=None, lookups=None,
+              prob_markets=()):
+    """Fill in result + outcome for logged picks that don't have one yet.
+
+    lookups, when given, maps market -> lookup(season, week, player). This
+    matters because the log holds rows from EVERY market while a single
+    actuals_lookup is bound to whichever market the Scorecard dropdown happens
+    to be on. Grading a qb_passing bet against the receiving model looks up the
+    quarterback's RECEIVING yards, compares that to a 232.5 passing line, and
+    records a confident nonsense result.
+
+    prob_markets names the markets whose model outputs a probability rather
+    than a stat line (anytime_td), since those grade differently.
+
+    actuals_lookup stays supported for backwards compatibility: without
+    lookups, behaviour is unchanged.
+    """
     user_id = user["id"]
     client = _client(user)
     log = load_log(user)
@@ -97,16 +111,33 @@ def grade_log(actuals_lookup, is_prob=False, user=None):
     for _, row in log.iterrows():
         if pd.notna(row.get("outcome")) and str(row.get("outcome")).strip():
             continue
-        actual = actuals_lookup(row["season"], row["week"], row["player"])
+
+        mkt = row["market"]
+        if lookups is not None:
+            fn = lookups.get(mkt)
+            if fn is None:
+                continue                      # no module for this market
+            row_is_prob = mkt in prob_markets
+        else:
+            fn = actuals_lookup
+            row_is_prob = is_prob
+
+        try:
+            actual = fn(row["season"], row["week"], row["player"])
+        except Exception:
+            continue
         if actual is None:
             continue
 
-        if is_prob:
+        if row_is_prob:
             outcome = "WIN" if actual >= 100 else "LOSS"
         else:
             line = float(row["line"])
             if actual == line:
-                outcome = "PUSH"
+                # VOID rather than PUSH so it matches the tracker sheet, where
+                # a push and a void are both "stake returned, excluded from
+                # win rate and ROI".
+                outcome = "VOID"
             else:
                 went_over = actual > line
                 picked_over = (row["side"] == "OVER")
@@ -115,7 +146,7 @@ def grade_log(actuals_lookup, is_prob=False, user=None):
         (client.table(TABLE)
                .update({"result": float(actual), "outcome": outcome})
                .eq("user_id", user_id)
-               .eq("market", row["market"])
+               .eq("market", mkt)
                .eq("season", int(row["season"]))
                .eq("week", int(row["week"]))
                .eq("player", row["player"])

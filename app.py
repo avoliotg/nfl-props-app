@@ -587,10 +587,18 @@ with tab_scorecard:
         m2.metric("Actually bet", bet_count)
         m3.metric("Graded (have result)", len(graded))
 
-        if st.button("🎯 Grade picks (pull actual results)"):
-            betlog.grade_log(
-                lambda s, w, p: module.actual_result(int(s), int(w), p),
-                is_prob=IS_PROB, user=st.session_state.user)
+        if st.button("🎯 Grade picks (all markets)"):
+            # One lookup per market, so each row grades against its own model.
+            grade_lookups = {
+                mk: (lambda m: lambda s, w, p: m.actual_result(int(s), int(w), p))(mod)
+                for mk, mod in MODULES.items() if hasattr(mod, "actual_result")
+            }
+            if hasattr(qb_rushing, "actual_result"):
+                grade_lookups["qb_rushing"] = (
+                    lambda s, w, p: qb_rushing.actual_result(int(s), int(w), p))
+            betlog.grade_log(None, user=st.session_state.user,
+                             lookups=grade_lookups,
+                             prob_markets=("anytime_td",))
             st.success("Graded. Refreshing...")
             st.rerun()
 
@@ -1248,3 +1256,64 @@ if IS_ADMIN:
                                               x_season, x_week),
                         file_name=f"opalscales_{png_pick}_{stamp}.png".replace(" ", "_"),
                         mime="image/png", key="x_png")
+
+            st.divider()
+            st.markdown("##### Bet tracker (paste into the spreadsheet)")
+
+            log = betlog.load_log(st.session_state.user)
+            if len(log) == 0:
+                st.caption("Nothing in the log yet.")
+            else:
+                # betlog saves EVERY board row, with `bet` marking the ones you
+                # actually placed. A units tracker only wants those; unbet rows
+                # would have no stake and would pollute ROI.
+                truthy = [True, "True", "true", 1, "1"]
+                bl = log[log["bet"].isin(truthy)].copy()
+
+                tc1, tc2 = st.columns(2)
+                with tc1:
+                    t_seasons = ["All"] + sorted(
+                        bl["season"].dropna().unique().tolist())
+                    t_season = st.selectbox("Season", t_seasons, key="trk_season")
+                with tc2:
+                    pool = bl if t_season == "All" else bl[bl["season"] == t_season]
+                    t_weeks = ["All"] + sorted(pool["week"].dropna().unique().tolist())
+                    t_week = st.selectbox("Week", t_weeks, key="trk_week")
+
+                sel = bl if t_season == "All" else bl[bl["season"] == t_season]
+                if t_week != "All":
+                    sel = sel[sel["week"] == t_week]
+
+                if len(sel) == 0:
+                    st.caption("No placed bets in that range.")
+                else:
+                    # Game date and matchup need the player's team, so a schedule
+                    # and a team map are required per (season, week) and market.
+                    gbw, tbk = {}, {}
+                    for (sn, wk) in sel[["season", "week"]].drop_duplicates().itertuples(index=False):
+                        try:
+                            gbw[(sn, wk)] = game_export.load_games(sn, wk)
+                        except Exception:
+                            gbw[(sn, wk)] = None
+                        for mk in sel[(sel["season"] == sn) & (sel["week"] == wk)]["market"].unique():
+                            if mk not in MODULES:
+                                continue
+                            extra = [qb_rushing] if mk == "rushing" else []
+                            try:
+                                tbk[(sn, wk, mk)] = game_export.team_map(
+                                    sn, wk, mk, MODULES, db._norm_name,
+                                    extra_modules=extra)
+                            except Exception:
+                                tbk[(sn, wk, mk)] = {}
+
+                    trk = game_export.tracker_rows(sel, gbw, tbk, db._norm_name)
+                    n_blank = int((trk["Game Date"].astype(str) == "").sum())
+                    st.markdown(f"**{len(trk)} placed bet(s)**")
+                    if n_blank:
+                        st.caption(f"{n_blank} row(s) had no team match, so no game "
+                                   "date. They sort to the bottom; fill those by hand.")
+                    st.dataframe(trk, width='stretch', hide_index=True)
+                    st.caption("Copy below, then paste into cell A4 of the Bets sheet. "
+                               "Columns A-N fill; enter Stake in column O.")
+                    st.code(trk.to_csv(index=False, header=False, sep="\t"),
+                            language=None)

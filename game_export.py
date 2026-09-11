@@ -183,3 +183,100 @@ def filter_games(frame, selected_matchups, include_unassigned=False):
     if include_unassigned:
         keep = keep | (frame["Game"] == "")
     return frame[keep].reset_index(drop=True)
+
+
+# ---------------------------------------------------------------------------
+# Bet tracker export
+# ---------------------------------------------------------------------------
+
+TRACKER_COLS = ["Game Date", "Kickoff", "Game", "Logged", "Season", "Week",
+                "Market", "Player", "Side", "Line", "Odds", "Edge", "Tier",
+                "Outcome"]
+
+
+def _to_eastern(series):
+    """betlog stores logged_at in UTC (the server clock). The tracker wants
+    Eastern, so a bet placed at 10:47 ET does not read 14:47."""
+    import pandas as pd
+    t = pd.to_datetime(series, errors="coerce", utc=True)
+    try:
+        t = t.dt.tz_convert("America/New_York")
+    except Exception:
+        pass
+    return t.dt.strftime("%Y-%m-%d %H:%M").fillna("")
+
+
+def tracker_rows(bets, games_by_week, tmap_by_key, norm):
+    """Build the 14 tracker columns from betlog rows.
+
+    bets           betlog rows already filtered to bet == True
+    games_by_week  {(season, week): games DataFrame from load_games}
+    tmap_by_key    {(season, week, market): team map from team_map}
+    norm           name normalizer (db._norm_name)
+
+    Odds are picked by side, because betlog stores over_odds and under_odds
+    separately and there is no single odds column. Taking the wrong one would
+    silently produce wrong profit figures in the sheet.
+    """
+    import pandas as pd
+
+    out = []
+    logged = _to_eastern(bets["logged_at"]) if "logged_at" in bets.columns \
+        else pd.Series([""] * len(bets), index=bets.index)
+
+    for idx, r in bets.iterrows():
+        season, week = r.get("season"), r.get("week")
+        market, player = r.get("market"), r.get("player")
+        side = str(r.get("side") or "").upper()
+
+        gdf = games_by_week.get((season, week))
+        tmap = tmap_by_key.get((season, week, market), {})
+        team = (tmap.get(norm(player)) or (None, None))[0]
+
+        gdate, kick, matchup = "", "", ""
+        if gdf is not None and team:
+            hit = gdf[(gdf["home_team"].astype(str) == str(team))
+                      | (gdf["away_team"].astype(str) == str(team))]
+            if len(hit):
+                g = hit.iloc[0]
+                matchup = g.get("matchup", "")
+                gdate = str(g.get("gameday", "") or "")
+                kick = str(g.get("gametime", "") or "")
+
+        odds = r.get("over_odds") if side == "OVER" else r.get("under_odds")
+        if odds is None or (isinstance(odds, float) and odds != odds):
+            odds = r.get("over_odds") if r.get("over_odds") is not None \
+                else r.get("under_odds")
+
+        # `x or ""` is not enough: a pandas NaN is TRUTHY, so a pending bet
+        # came through as the string "NAN" and would not match the sheet's
+        # WIN / LOSS / VOID / blank convention.
+        ov = r.get("outcome")
+        outcome = "" if (ov is None or pd.isna(ov)) else str(ov).strip().upper()
+
+        out.append({
+            "Game Date": gdate,
+            "Kickoff": kick,
+            "Game": matchup,
+            "Logged": logged.get(idx, ""),
+            "Season": season,
+            "Week": week,
+            "Market": market,
+            "Player": player,
+            "Side": side,
+            "Line": r.get("line"),
+            "Odds": odds,
+            "Edge": r.get("edge"),
+            "Tier": r.get("tier"),
+            "Outcome": outcome,
+        })
+
+    df = pd.DataFrame(out, columns=TRACKER_COLS)
+    if len(df):
+        # Rows whose team could not be resolved have an empty Game Date, which
+        # sorts first as a string. Push them to the end so the sheet reads
+        # chronologically and the odd unmatched row is obvious at the bottom.
+        df["_blank"] = (df["Game Date"].astype(str) == "").astype(int)
+        df = (df.sort_values(["_blank", "Game Date", "Game", "Player"])
+              .drop(columns=["_blank"]).reset_index(drop=True))
+    return df
