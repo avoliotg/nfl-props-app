@@ -135,12 +135,45 @@ def import_lines(rows, season, week, user, sport="NFL"):
     bad_market = []
 
     boards_cache = {}
+
+    def _board_for(module, mkt):
+        """Played rows UNIONED with the upcoming-week assembler.
+
+        project_week has two paths: played games, or build_upcoming_week when
+        the requested week has no rows yet. Once the first game of a week
+        finishes it takes the played path, which contains ONLY the teams that
+        have played. A pre-kickoff import for a later game then found no board
+        match and stored projection and edge as NULL - silently, since a
+        missing match is not an error. That breaks CLV for exactly the late
+        captures that matter most.
+
+        Played rows come first and win on a duplicate, because a played row
+        carries the real current team and features.
+        """
+        frames = []
+        for getter in ("project_week", "build_upcoming_week"):
+            fn = getattr(module, getter, None)
+            if fn is None:
+                continue
+            try:
+                df = fn(season, week)
+            except Exception:
+                continue
+            if df is not None and len(df) > 0:
+                frames.append(df)
+        if not frames:
+            return pd.DataFrame()
+        out = pd.concat(frames, ignore_index=True)
+        if "player_display_name" in out.columns:
+            out = out.drop_duplicates(subset=["player_display_name"], keep="first")
+        return out
+
     def _get_board(mkt):
         if mkt not in boards_cache:
             module = MODULE_MAP.get(mkt)
-            board = module.project_week(season, week) if module else pd.DataFrame()
+            board = _board_for(module, mkt) if module else pd.DataFrame()
             if mkt == "rushing":
-                qb_board = qb_rushing.project_week(season, week)
+                qb_board = _board_for(qb_rushing, "qb_rushing")
                 if len(qb_board) > 0:
                     qb_board = qb_board.copy()
                     qb_board["is_qb_model"] = True
