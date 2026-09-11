@@ -23,6 +23,14 @@ import pandas as pd
 SLOT_ORDER = ["Wed", "Thu", "Fri", "Sat", "Sun AM", "Sun 1pm", "Sun 4pm",
               "SNF", "MNF", "Tue", "Other"]
 
+# team_map now calls build_upcoming_week as well as project_week, and the
+# assembler hits load_rosters and load_schedules each time. Five markets per
+# rerun made that noticeable, so results are memoised per (season, week,
+# market). The dict persists across Streamlit reruns because the module stays
+# loaded. Team assignments do not change within a week, so staleness is not a
+# concern; a full app reboot clears it.
+_TEAM_MAP_CACHE = {}
+
 
 def _slot(gameday, gametime):
     """Classify a kickoff into a viewing slot. gametime is ET in the schedule."""
@@ -96,22 +104,44 @@ def team_map(season, week, market_key, modules, norm, extra_modules=()):
     extra_modules covers markets served by more than one model, e.g. rushing
     also carries QB rushing players through qb_rushing.
     """
+    ck = (int(season), int(week), market_key,
+          tuple(getattr(m, "__name__", str(m)) for m in extra_modules))
+    if ck in _TEAM_MAP_CACHE:
+        return _TEAM_MAP_CACHE[ck]
+
     mods = [modules[market_key]] + list(extra_modules)
     m = {}
     for mod in mods:
-        try:
-            proj = mod.project_week(int(season), int(week))
-        except Exception:
-            continue
-        if proj is None or len(proj) == 0:
-            continue
-        if "team" not in proj.columns:
-            continue
-        for _, r in proj.iterrows():
-            key = norm(r.get("player_display_name"))
-            if not key:
+        # BOTH sources, and this is the point of the function.
+        #
+        # project_week has two paths: played games, or build_upcoming_week as a
+        # fallback when the requested week has no rows yet. Mid-week those
+        # differ. Once the Wednesday game posted to nflverse, project_week
+        # started taking the played path and returned ONLY New England and
+        # Seattle players, so every other team failed the team match and got
+        # hidden by the filter. A game plainly full of rows read as empty.
+        #
+        # Calling the assembler as well covers every team regardless of what
+        # has been played. project_week runs first and setdefault keeps it
+        # authoritative where both have a player, since played-game rows carry
+        # the real current team.
+        for getter in ("project_week", "build_upcoming_week"):
+            fn = getattr(mod, getter, None)
+            if fn is None:
                 continue
-            m.setdefault(key, (r.get("team"), r.get("opponent_team")))
+            try:
+                proj = fn(int(season), int(week))
+            except Exception:
+                continue
+            if proj is None or len(proj) == 0 or "team" not in proj.columns:
+                continue
+            for _, r in proj.iterrows():
+                key = norm(r.get("player_display_name"))
+                if not key:
+                    continue
+                m.setdefault(key, (r.get("team"), r.get("opponent_team")))
+
+    _TEAM_MAP_CACHE[ck] = m
     return m
 
 
