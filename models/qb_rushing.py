@@ -67,11 +67,22 @@ def project_week(season, week):
     model, feats = load_model()
     qb = build_dataset()
     wk = qb[(qb["season"] == season) & (qb["week"] == week)].copy()
-    wk = wk.dropna(subset=feats)
 
-    if len(wk) == 0:
-        wk = build_upcoming_week(season, week)
-        wk = wk.dropna(subset=feats)
+    # Union played rows with the assembler at the FEATURE level, then score
+    # once. Using the assembler only when the played set was EMPTY broke any
+    # week where some games have finished and others have not: after the
+    # Wednesday opener this returned only NE and SEA, so every other team
+    # vanished from the board, from import_lines (which then stored null
+    # projections) and from the export team map.
+    up = build_upcoming_week(season, week)
+    if len(up) > 0:
+        wk = pd.concat([wk, up], ignore_index=True)
+        if "player_id" in wk.columns:
+            # played rows come first, so they win a duplicate: a real result
+            # beats a bridged estimate
+            wk = wk.drop_duplicates(subset=["player_id"], keep="first")
+
+    wk = wk.dropna(subset=feats)
 
     if len(wk) == 0:
         return pd.DataFrame()
@@ -152,7 +163,7 @@ def build_upcoming_week(season, week):
         columns={"gsis_id": "player_id"})
     ros = ros.dropna(subset=["player_id"]).drop_duplicates(subset=["player_id"])
 
-        # depth chart → each team's current QB1 (most recent snapshot); keep only starters
+    # depth chart -> each team's current QB1 (most recent snapshot); keep only starters
     dc = nfl.load_depth_charts([season])
     dc = dc.to_pandas() if hasattr(dc, "to_pandas") else dc
     dc = dc[dc["pos_abb"] == "QB"].copy()

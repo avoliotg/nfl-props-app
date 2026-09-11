@@ -63,11 +63,22 @@ def project_week(season, week, min_carries=1.5):
     model, feats = load_model()
     rush = build_dataset()
     wk = rush[(rush["season"] == season) & (rush["week"] == week)].copy()
-    wk = wk[wk["carries_roll"] >= min_carries].dropna(subset=feats)
 
-    if len(wk) == 0:
-        wk = build_upcoming_week(season, week)
-        wk = wk[wk["carries_roll"] >= min_carries].dropna(subset=feats)
+    # Union played rows with the assembler at the FEATURE level, then score
+    # once. Using the assembler only when the played set was EMPTY broke any
+    # week where some games have finished and others have not: after the
+    # Wednesday opener this returned only NE and SEA, so every other team
+    # vanished from the board, from import_lines (which then stored null
+    # projections) and from the export team map.
+    up = build_upcoming_week(season, week)
+    if len(up) > 0:
+        wk = pd.concat([wk, up], ignore_index=True)
+        if "player_id" in wk.columns:
+            # played rows come first, so they win a duplicate: a real result
+            # beats a bridged estimate
+            wk = wk.drop_duplicates(subset=["player_id"], keep="first")
+
+    wk = wk[wk["carries_roll"] >= min_carries].dropna(subset=feats)
 
     if len(wk) == 0:
         return pd.DataFrame()
@@ -77,6 +88,7 @@ def project_week(season, week, min_carries=1.5):
             "projection", "carries_roll"]
     cols = [c for c in cols if c in wk.columns]
     return wk[cols].sort_values("projection", ascending=False).reset_index(drop=True)
+
 
 def build_upcoming_week(season, week):
     """Manufacture player-week rows for a game not yet played (e.g. Week 1),
