@@ -205,12 +205,20 @@ def import_lines(rows, season, week, user, sport="NFL"):
             if len(match) > 0:
                 row = match.iloc[0]
                 projection = float(row["projection"])
-                if mkt == "anytime_td":
+                if projection != projection:
+                    projection = None
+
+                if projection is None:
+                    # no usable projection, so no edge: store nulls rather than
+                    # crashing on None arithmetic
+                    pass
+                elif mkt == "anytime_td":
                     if over_odds is not None:
                         implied = anytime_td.american_to_prob(over_odds)
                         if implied is not None:
                             edge = round(projection - implied, 1)
                 elif line_val is not None:
+
                     effective_mkt = "qb_rushing" if row.get("is_qb_model") else mkt
                     res = mc.edge_calc(effective_mkt, projection, line_val, GAMES_PLAYED,
                                        over_odds=over_odds, under_odds=under_odds)
