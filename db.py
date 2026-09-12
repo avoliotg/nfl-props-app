@@ -111,6 +111,31 @@ def _norm_name(name):
     return " ".join(parts)
 
 
+def _json_safe(d):
+    """Replace NaN with None throughout a record, and coerce numpy scalars.
+
+    NaN is not valid JSON and httpx serialises with allow_nan=False, so a
+    single NaN anywhere in the record raises ValueError and the whole insert
+    fails. Guarding individual fields kept missing cases, so the whole dict
+    gets scrubbed here instead.
+    """
+    out = {}
+    for k, v in d.items():
+        if v is None or isinstance(v, (str, bool, int)):
+            out[k] = v
+            continue
+        if isinstance(v, float):
+            out[k] = None if v != v else v          # NaN != itself
+            continue
+        # numpy scalars (np.float64, np.int64) are not JSON-serialisable
+        try:
+            fv = float(v)
+            out[k] = None if fv != fv else fv
+        except (TypeError, ValueError):
+            out[k] = v
+    return out
+
+
 def import_lines(rows, season, week, user, sport="NFL"):
     """Append a batch of imported lines as a NEW timestamped snapshot into 'lines'.
     Each import adds rows (never overwrites) so line movement is preserved for CLV.
@@ -139,14 +164,7 @@ def import_lines(rows, season, week, user, sport="NFL"):
     def _board_for(module, mkt):
         """Played rows UNIONED with the upcoming-week assembler.
 
-        project_week has two paths: played games, or build_upcoming_week when
-        the requested week has no rows yet. Once the first game of a week
-        finishes it takes the played path, which contains ONLY the teams that
-        have played. A pre-kickoff import for a later game then found no board
-        match and stored projection and edge as NULL - silently, since a
-        missing match is not an error. That breaks CLV for exactly the late
-        captures that matter most.
-
+        project_week now unions these itself, so this is belt-and-braces.
         Played rows come first and win on a duplicate, because a played row
         carries the real current team and features.
         """
@@ -218,7 +236,6 @@ def import_lines(rows, season, week, user, sport="NFL"):
                         if implied is not None:
                             edge = round(projection - implied, 1)
                 elif line_val is not None:
-
                     effective_mkt = "qb_rushing" if row.get("is_qb_model") else mkt
                     res = mc.edge_calc(effective_mkt, projection, line_val, GAMES_PLAYED,
                                        over_odds=over_odds, under_odds=under_odds)
@@ -232,7 +249,7 @@ def import_lines(rows, season, week, user, sport="NFL"):
             "captured_at": captured_at,
             "projection": projection, "edge": edge,
         }
-        client.table("lines").insert(record).execute()
+        client.table("lines").insert(_json_safe(record)).execute()
         imported += 1
         by_market[mkt] = by_market.get(mkt, 0) + 1
 
@@ -266,9 +283,12 @@ def _to_num(v):
     if v is None or str(v).strip() == "" or str(v).strip().upper() == "UNCERTAIN":
         return None
     try:
-        return float(v)
+        f = float(v)
     except Exception:
         return None
+    # a NaN here would survive to the JSON encoder and crash the insert, so
+    # reject it at the source as well
+    return None if f != f else f
     # ---------- Authentication ----------
 
 def sign_up(email, password):
