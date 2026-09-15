@@ -59,7 +59,7 @@ def test_connection():
         return True, f"Connected! ({len(resp.data)} rows)"
     except Exception as e:
         return False, f"Connection failed: {e} | URL used: {st.secrets['SUPABASE_URL']}"
-    
+
 
 # Map various CSV market names -> the app's internal market keys
 MARKET_MAP = {
@@ -134,6 +134,27 @@ def _json_safe(d):
         except (TypeError, ValueError):
             out[k] = v
     return out
+
+
+def _model_side(market, proj, line):
+    """Which side the MODEL favours, decided by probability.
+
+    Comparing projection to line is wrong under the gamma pricing. With the old
+    symmetric normal the two agreed: a projection above the line meant P(over)
+    above 0.5. The gamma puts the median well below the mean, so whenever the
+    line sits between them the comparison says OVER while the probability says
+    UNDER. That mislabelled the side while displaying a correct edge - Juwan
+    Johnson at proj 43.9, line 43.5 showed OVER +8.5 when the model actually
+    favoured the UNDER by 8.5 - and a wrong side also grades wrong, which would
+    have written false outcomes into the log.
+    """
+    import mc
+    if proj is None or line is None or pd.isna(proj) or pd.isna(line):
+        return ""
+    p_over = mc.prob_over(market, float(proj), float(line), 0)
+    if p_over is None:
+        return "—"
+    return "OVER" if p_over > 0.5 else "UNDER"
 
 
 def import_lines(rows, season, week, user, sport="NFL"):
@@ -289,7 +310,9 @@ def _to_num(v):
     # a NaN here would survive to the JSON encoder and crash the insert, so
     # reject it at the source as well
     return None if f != f else f
-    # ---------- Authentication ----------
+
+
+# ---------- Authentication ----------
 
 def sign_up(email, password):
     """Create a new user account. Returns (success, message)."""
@@ -351,22 +374,7 @@ def get_line_movement(season, week, market, user, sport="NFL"):
     is_td = (market == "anytime_td")
 
     def _side(row):
-        proj, line = row.get("projection"), row.get("line")
-        if proj is None or line is None or pd.isna(proj) or pd.isna(line):
-            return ""
-        if proj > line:
-            return "OVER"
-        elif proj < line:
-            return "UNDER"
-        # Exact tie: proj == line cannot be resolved by comparison, but the
-        # model still has an opinion. Outcomes are right-skewed, so P(over) at
-        # the money is about 0.41 for receiving, meaning the under is favoured.
-        # Falling through to "—" left rows like Breece Hall (proj 20.5, line
-        # 20.5) showing a +10.5 Max edge with no side.
-        p_over = mc.prob_over(market, float(proj), float(line), 0)
-        if p_over is None:
-            return "—"
-        return "OVER" if p_over > 0.5 else "UNDER"
+        return _model_side(market, row.get("projection"), row.get("line"))
 
     def _td_side(proj, implied):
         if proj is None or implied is None or pd.isna(proj) or pd.isna(implied):
@@ -436,3 +444,4 @@ def get_line_movement(season, week, market, user, sport="NFL"):
                 "series": line_series,
             })
     return pd.DataFrame(out)
+
