@@ -78,7 +78,7 @@ def available_weeks(season):
     # no way to project an upcoming game.
     nxt = int(max(played)) + 1
     return played + ([nxt] if nxt <= 22 else [])
-m
+
 
 
 def project_week(season, week, min_attempts=1.5):
