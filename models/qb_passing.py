@@ -71,10 +71,14 @@ def available_seasons():
 def available_weeks(season):
     rec = build_dataset()
     played = sorted(rec[rec["season"] == season]["week"].dropna().unique().tolist())
-    if played:
-        return played
-    # no played games yet (pre-season) → only Week 1 is sensibly projectable
-    return [1]
+    if not played:
+        return [1]
+    # Also offer the NEXT week. Returning only played weeks meant that once
+    # week 1 finished, week 2 vanished from the dropdown entirely and there was
+    # no way to project an upcoming game.
+    nxt = int(max(played)) + 1
+    return played + ([nxt] if nxt <= 22 else [])
+m
 
 
 def project_week(season, week, min_attempts=1.5):
