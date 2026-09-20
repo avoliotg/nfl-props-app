@@ -1,65 +1,198 @@
-"""Database connection + helpers for OpalScales (Supabase)."""
+"""Database connection + helpers for OpalScales (Supabase).
+
+Changes in this revision
+------------------------
+1. ONE authenticated client per session, not one per call. Supabase refresh
+   tokens are single-use. The Line Movement tab calls get_authed_client once
+   per market, so six set_session calls per rerun meant the later ones could
+   be handed an already-rotated token, fail, and silently fall back to the
+   anon client. Under an RLS policy scoped TO authenticated, the anon client
+   reads return ZERO ROWS WITH NO ERROR, so the tab went blank for every week
+   including ones that used to render. The client is now built once and reused.
+
+2. Auth degradation is no longer silent. If the session dies we record it and
+   the read helpers say so on screen instead of showing an empty table.
+
+3. Queries are paginated. PostgREST caps an unbounded select at 1000 rows.
+   Ordering captured_at ascending meant that past 1000 rows per market/week
+   we kept the OLDEST snapshots and dropped the newest, so Line Movement would
+   have frozen: latest line stops updating and every move reads flat. At ~150
+   receiving players that is about seven captures.
+
+4. Read failures raise into a visible warning rather than returning an empty
+   DataFrame from a bare except.
+
+5. compute_p_over added, so the save-to-log path can stop writing p_over=None.
+"""
 import streamlit as st
 from supabase import create_client
 import pandas as pd
 
+# PostgREST returns at most this many rows per request by default.
+_PAGE = 1000
+
+# session_state keys
+_CLIENT_KEY = "_opal_authed_client"
+_CLIENT_TOKEN_KEY = "_opal_authed_client_token"
+_DEGRADED_KEY = "_opal_auth_degraded"
+
+
+# ---------- session_state access that survives bare (non-Streamlit) runs ----------
+
+def _ss_get(key, default=None):
+    try:
+        return st.session_state.get(key, default)
+    except Exception:
+        return default
+
+
+def _ss_set(key, value):
+    try:
+        st.session_state[key] = value
+    except Exception:
+        pass
+
+
+def _warn(msg):
+    """Surface a problem instead of swallowing it. No-ops outside Streamlit."""
+    try:
+        st.warning(msg)
+    except Exception:
+        print(f"WARNING: {msg}")
+
+
+# ---------- clients ----------
 
 @st.cache_resource
 def get_client():
-    """Create a cached Supabase client from secrets."""
+    """Create a cached Supabase client from secrets (anon, no user session)."""
     url = st.secrets["SUPABASE_URL"]
     key = st.secrets["SUPABASE_KEY"]
     return create_client(url, key)
 
+
 def get_user_client(access_token, refresh_token):
     """Build a Supabase client carrying a specific user's session, so its
     queries run AS that authenticated user (making auth.uid() resolve at the DB).
-    Rebuilt per rerun from tokens stored in session_state. NOT cached — caching
-    would leak one user's session across users.
-    Returns (client, fresh_access_token, fresh_refresh_token) — if Supabase
-    rotated the refresh token internally, the caller MUST persist the fresh
-    ones back to session_state or subsequent calls will fail."""
+
+    NOT cached by Streamlit: caching would leak one user's session across users.
+    Reuse is handled per session in get_authed_client instead.
+
+    Returns (client, fresh_access_token, fresh_refresh_token). If Supabase
+    rotated the refresh token internally the caller MUST persist the fresh ones
+    back to session_state or subsequent calls will fail.
+    """
     url = st.secrets["SUPABASE_URL"]
     key = st.secrets["SUPABASE_KEY"]
     client = create_client(url, key)
     try:
         client.auth.set_session(access_token, refresh_token)
     except Exception:
-        # refresh token already used/invalid — session is dead, caller must re-login
+        # refresh token already used or invalid, session is dead
         return client, None, None
-    session = client.auth.get_session()
+    try:
+        session = client.auth.get_session()
+    except Exception:
+        session = None
     if session:
         return client, session.access_token, session.refresh_token
     return client, access_token, refresh_token
 
+
 def get_authed_client(user):
-    """Given the session_state user dict, return an authenticated client,
-    refreshing and persisting tokens back into `user` (in place) if Supabase
-    rotated them. Falls back to the anon client if no valid tokens exist."""
-    if not (user and isinstance(user, dict) and user.get("access_token") and user.get("refresh_token")):
+    """Return an authenticated client for this session, building it at most once.
+
+    A single client object refreshes its own session internally, so calling
+    set_session repeatedly is not only unnecessary, it burns single-use refresh
+    tokens and is what broke Line Movement. The built client is cached in
+    session_state and reused for the life of the login.
+
+    Falls back to the anon client if no valid tokens exist, and records that
+    fallback in session_state so read helpers can tell the user why a table is
+    empty rather than showing a blank grid.
+    """
+    if not (user and isinstance(user, dict)
+            and user.get("access_token") and user.get("refresh_token")):
+        _ss_set(_DEGRADED_KEY, "no session tokens (log out and back in)")
         return get_client()
-    client, fresh_access, fresh_refresh = get_user_client(user["access_token"], user["refresh_token"])
+
+    cached = _ss_get(_CLIENT_KEY)
+    cached_token = _ss_get(_CLIENT_TOKEN_KEY)
+    if cached is not None and cached_token == user.get("access_token"):
+        _ss_set(_DEGRADED_KEY, None)
+        return cached
+
+    client, fresh_access, fresh_refresh = get_user_client(
+        user["access_token"], user["refresh_token"])
+
     if fresh_access is None:
-        # session dead (refresh token already used/invalid) — degrade to anon;
-        # user needs to log out and back in to restore authenticated access
+        # session dead. Degrade to anon, but say so.
+        _ss_set(_CLIENT_KEY, None)
+        _ss_set(_CLIENT_TOKEN_KEY, None)
+        _ss_set(_DEGRADED_KEY, "session expired (log out and back in)")
         return get_client()
+
     if fresh_access != user["access_token"]:
         user["access_token"] = fresh_access
         user["refresh_token"] = fresh_refresh
-        st.session_state.user = user  # persist the rotation so future calls use fresh tokens
+        _ss_set("user", user)  # persist the rotation
+
+    _ss_set(_CLIENT_KEY, client)
+    _ss_set(_CLIENT_TOKEN_KEY, fresh_access)
+    _ss_set(_DEGRADED_KEY, None)
     return client
+
+
+def auth_degraded():
+    """Reason string if the last client build fell back to anon, else None."""
+    return _ss_get(_DEGRADED_KEY)
+
+
+def clear_authed_client():
+    """Drop the cached authenticated client. Call on logout."""
+    _ss_set(_CLIENT_KEY, None)
+    _ss_set(_CLIENT_TOKEN_KEY, None)
+    _ss_set(_DEGRADED_KEY, None)
 
 
 def test_connection():
     """Quick check: can we reach the database? Returns (ok, message)."""
     try:
-        url = st.secrets["SUPABASE_URL"]
         client = get_client()
         resp = client.table("lines").select("*").limit(1).execute()
         return True, f"Connected! ({len(resp.data)} rows)"
     except Exception as e:
         return False, f"Connection failed: {e} | URL used: {st.secrets['SUPABASE_URL']}"
 
+
+# ---------- paginated reads ----------
+
+def _fetch_lines_rows(client, sport, season, week, market=None, ascending=True):
+    """Fetch ALL matching rows from 'lines', paging past the 1000-row cap.
+
+    Raises on query failure so the caller can surface it. Returning [] on error
+    is what let a dead session look like an empty week.
+    """
+    rows = []
+    start = 0
+    while True:
+        q = (client.table("lines").select("*")
+             .eq("sport", sport).eq("season", int(season)).eq("week", int(week)))
+        if market is not None:
+            q = q.eq("market", market)
+        resp = (q.order("captured_at", desc=not ascending)
+                 .range(start, start + _PAGE - 1).execute())
+        batch = resp.data or []
+        rows.extend(batch)
+        if len(batch) < _PAGE:
+            break
+        start += _PAGE
+        if start > 200000:  # runaway guard
+            break
+    return rows
+
+
+# ---------- market + name normalisation ----------
 
 # Map various CSV market names -> the app's internal market keys
 MARKET_MAP = {
@@ -91,15 +224,16 @@ def _normalize_market(raw):
     key = str(raw).strip().lower()
     return MARKET_MAP.get(key)
 
+
 def _norm_name(name):
     """Normalize a player name for matching.
 
     Lowercase, strip whitespace, then remove punctuation and generational
     suffixes, because the same player is spelled differently by FanDuel and
     nflverse:
-        'D.J. Moore'        vs 'DJ Moore'          (periods)
-        'DeVon Achane'      vs "De'Von Achane"     (apostrophe)
-        'Michael Pittman Jr.' vs 'Michael Pittman' (suffix)
+        'D.J. Moore'          vs 'DJ Moore'          (periods)
+        'DeVon Achane'        vs "De'Von Achane"     (apostrophe)
+        'Michael Pittman Jr.' vs 'Michael Pittman'   (suffix)
     Curly apostrophes from screenshot extraction are handled too.
     """
     if name is None:
@@ -136,6 +270,20 @@ def _json_safe(d):
     return out
 
 
+def _to_num(v):
+    if v is None or str(v).strip() == "" or str(v).strip().upper() == "UNCERTAIN":
+        return None
+    try:
+        f = float(v)
+    except Exception:
+        return None
+    # a NaN here would survive to the JSON encoder and crash the insert, so
+    # reject it at the source as well
+    return None if f != f else f
+
+
+# ---------- model side + probability ----------
+
 def _model_side(market, proj, line):
     """Which side the MODEL favours, decided by probability.
 
@@ -143,9 +291,9 @@ def _model_side(market, proj, line):
     symmetric normal the two agreed: a projection above the line meant P(over)
     above 0.5. The gamma puts the median well below the mean, so whenever the
     line sits between them the comparison says OVER while the probability says
-    UNDER. That mislabelled the side while displaying a correct edge - Juwan
+    UNDER. That mislabelled the side while displaying a correct edge (Juwan
     Johnson at proj 43.9, line 43.5 showed OVER +8.5 when the model actually
-    favoured the UNDER by 8.5 - and a wrong side also grades wrong, which would
+    favoured the UNDER by 8.5), and a wrong side also grades wrong, which would
     have written false outcomes into the log.
     """
     import mc
@@ -153,15 +301,38 @@ def _model_side(market, proj, line):
         return ""
     p_over = mc.prob_over(market, float(proj), float(line), 0)
     if p_over is None:
-        return "—"
+        return "\u2014"
     return "OVER" if p_over > 0.5 else "UNDER"
 
+
+def compute_p_over(market, proj, line, games_played=0):
+    """P(over) for a yardage/count market, or None when unpriced.
+
+    Exists so the save-to-log paths can store a real p_over instead of null.
+    Below-floor projections return None by design and must stay null, never 0.
+    """
+    import mc
+    if proj is None or line is None or pd.isna(proj) or pd.isna(line):
+        return None
+    try:
+        p = mc.prob_over(market, float(proj), float(line), games_played)
+    except Exception:
+        return None
+    if p is None or p != p:
+        return None
+    return float(p)
+
+
+# ---------- imports ----------
 
 def import_lines(rows, season, week, user, sport="NFL"):
     """Append a batch of imported lines as a NEW timestamped snapshot into 'lines'.
     Each import adds rows (never overwrites) so line movement is preserved for CLV.
     Also computes and stores the model's projection + edge AT IMPORT TIME, so the
     historical record reflects what the model actually said at that moment.
+
+    Failed inserts are now counted and returned instead of raising mid-batch,
+    so a single bad row cannot make a whole import look successful or dead.
     """
     from datetime import datetime, timezone
     import mc
@@ -174,9 +345,14 @@ def import_lines(rows, season, week, user, sport="NFL"):
     GAMES_PLAYED = 0  # TODO: same placeholder as the Board; keep in sync
 
     client = get_authed_client(user)
+    degraded = auth_degraded()
+    if degraded:
+        _warn(f"Importing without an authenticated session: {degraded}. "
+              "Rows may be rejected by RLS.")
 
     captured_at = datetime.now(timezone.utc).isoformat()
     imported = 0
+    failed = []
     by_market = {}
     bad_market = []
 
@@ -270,79 +446,48 @@ def import_lines(rows, season, week, user, sport="NFL"):
             "captured_at": captured_at,
             "projection": projection, "edge": edge,
         }
-        client.table("lines").insert(_json_safe(record)).execute()
-        imported += 1
-        by_market[mkt] = by_market.get(mkt, 0) + 1
+        try:
+            client.table("lines").insert(_json_safe(record)).execute()
+            imported += 1
+            by_market[mkt] = by_market.get(mkt, 0) + 1
+        except Exception as e:
+            failed.append(f"{player} ({mkt}): {e}")
 
     return {"imported": imported, "by_market": by_market,
-            "bad_market": [m for m in bad_market if m]}
+            "bad_market": [m for m in bad_market if m],
+            "failed": failed}
 
+
+# ---------- reads ----------
 
 def get_lines(season, week, market, user, sport="NFL"):
     """Fetch the pool of imported lines for a given market/week as a dict
-    {player_name: {'line':..., 'over_odds':..., 'under_odds':...}}.
-    Returns the MOST RECENT snapshot per player. Uses the authenticated user's
-    client so RLS (read-for-authenticated) resolves correctly."""
+    {player_norm: {'line':..., 'over_odds':..., 'under_odds':..., 'captured_at':...}}.
+
+    Returns the MOST RECENT snapshot per player: rows come back oldest first and
+    later writes overwrite earlier ones. That only holds if every row is read,
+    which is why this pages past the 1000-row cap.
+    """
     client = get_authed_client(user)
+    degraded = auth_degraded()
     try:
-        resp = (client.table("lines").select("*")
-                .eq("sport", sport).eq("season", int(season))
-                .eq("week", int(week)).eq("market", market)
-                .order("captured_at", desc=False).execute())
-        out = {}
-        for r in resp.data:
-            out[_norm_name(r["player"])] = {"line": r.get("line"),
-                                "over_odds": r.get("over_odds"),
-                                "under_odds": r.get("under_odds"),
-                                "captured_at": r.get("captured_at")}
-        return out
-    except Exception:
+        rows = _fetch_lines_rows(client, sport, season, week, market, ascending=True)
+    except Exception as e:
+        _warn(f"Line lookup failed for {market} wk{week}: {e}")
         return {}
 
+    if not rows and degraded:
+        _warn(f"No lines returned for {market} wk{week}, and the session is "
+              f"degraded: {degraded}. This is probably auth, not missing data.")
 
-def _to_num(v):
-    if v is None or str(v).strip() == "" or str(v).strip().upper() == "UNCERTAIN":
-        return None
-    try:
-        f = float(v)
-    except Exception:
-        return None
-    # a NaN here would survive to the JSON encoder and crash the insert, so
-    # reject it at the source as well
-    return None if f != f else f
+    out = {}
+    for r in rows:
+        out[_norm_name(r["player"])] = {"line": r.get("line"),
+                                        "over_odds": r.get("over_odds"),
+                                        "under_odds": r.get("under_odds"),
+                                        "captured_at": r.get("captured_at")}
+    return out
 
-
-# ---------- Authentication ----------
-
-def sign_up(email, password):
-    """Create a new user account. Returns (success, message)."""
-    client = get_client()
-    try:
-        res = client.auth.sign_up({"email": email, "password": password})
-        if res.user:
-            return True, "Account created! You can now log in."
-        return False, "Sign up failed — please try again."
-    except Exception as e:
-        return False, f"Sign up error: {e}"
-
-
-def sign_in(email, password):
-    """Log in an existing user. Returns (user_dict_or_None, message).
-    The user dict now also carries the session tokens so we can rebuild an
-    authenticated client per rerun."""
-    client = get_client()
-    try:
-        res = client.auth.sign_in_with_password({"email": email, "password": password})
-        if res.user:
-            return {
-                "id": res.user.id,
-                "email": res.user.email,
-                "access_token": res.session.access_token,
-                "refresh_token": res.session.refresh_token,
-            }, "Logged in!"
-        return None, "Login failed — check your email and password."
-    except Exception as e:
-        return None, f"Login error: {e}"
 
 def get_line_movement(season, week, market, user, sport="NFL"):
     """For a market/week, return a DataFrame with one row per player who has
@@ -352,21 +497,25 @@ def get_line_movement(season, week, market, user, sport="NFL"):
     instead of raw odds, since odds aren't linear. Players with only 1
     snapshot are excluded (nothing to compare yet). Also carries the RAW
     latest line/odds (not just display values) so a save-to-log action can
-    use them directly."""
+    use them directly.
+    """
     from models import anytime_td
     import mc
 
     client = get_authed_client(user)
+    degraded = auth_degraded()
+
     try:
-        resp = (client.table("lines").select("*")
-                .eq("sport", sport).eq("season", int(season))
-                .eq("week", int(week)).eq("market", market)
-                .order("captured_at", desc=False).execute())
-        rows = resp.data
-    except Exception:
-        rows = []
+        rows = _fetch_lines_rows(client, sport, season, week, market, ascending=True)
+    except Exception as e:
+        _warn(f"Movement query failed for {market} wk{week}: {e}")
+        return pd.DataFrame()
 
     if not rows:
+        if degraded:
+            _warn(f"No {market} rows returned for wk{week}, and the session is "
+                  f"degraded: {degraded}. Log out and back in before concluding "
+                  "the data is missing.")
         return pd.DataFrame()
 
     df = pd.DataFrame(rows)
@@ -383,7 +532,7 @@ def get_line_movement(season, week, market, user, sport="NFL"):
             return "OVER"
         elif proj < implied:
             return "UNDER"
-        return "—"
+        return "\u2014"
 
     def _toward_away(first_side, latest_side, move):
         side = first_side if first_side in ("OVER", "UNDER") else latest_side
@@ -406,12 +555,14 @@ def get_line_movement(season, week, market, user, sport="NFL"):
         last = grp.iloc[-1]
 
         latest_edge = last.get("edge")
-        latest_tier = mc.tier_for_edge(latest_edge) if latest_edge is not None and not pd.isna(latest_edge) else ""
+        latest_tier = (mc.tier_for_edge(latest_edge)
+                       if latest_edge is not None and not pd.isna(latest_edge) else "")
 
         if is_td:
             first_implied = anytime_td.american_to_prob(first.get("over_odds"))
             latest_implied = anytime_td.american_to_prob(last.get("over_odds"))
-            move = (latest_implied - first_implied) if (first_implied is not None and latest_implied is not None) else None
+            move = ((latest_implied - first_implied)
+                    if (first_implied is not None and latest_implied is not None) else None)
             first_side = _td_side(first.get("projection"), first_implied)
             latest_side = _td_side(last.get("projection"), latest_implied)
             td_series = [anytime_td.american_to_prob(v) for v in grp["over_odds"].tolist()]
@@ -422,26 +573,115 @@ def get_line_movement(season, week, market, user, sport="NFL"):
                 "line_move": move, "toward_away": _toward_away(first_side, latest_side, move),
                 "first_edge": first.get("edge"), "first_side": first_side,
                 "latest_edge": latest_edge, "latest_side": "", "latest_tier": latest_tier,
-                "first_captured": first.get("captured_at"), "latest_captured": last.get("captured_at"),
+                "first_captured": first.get("captured_at"),
+                "latest_captured": last.get("captured_at"),
                 "raw_line": last.get("line"), "raw_over_odds": last.get("over_odds"),
-                "raw_under_odds": last.get("under_odds"), "raw_projection": last.get("projection"),
+                "raw_under_odds": last.get("under_odds"),
+                "raw_projection": last.get("projection"),
+                "p_over": None,
                 "series": td_series,
             })
         else:
             first_side = _side(first)
             latest_side = _side(last)
-            move = (last.get("line") - first.get("line")) if pd.notna(last.get("line")) and pd.notna(first.get("line")) else None
+            move = ((last.get("line") - first.get("line"))
+                    if pd.notna(last.get("line")) and pd.notna(first.get("line")) else None)
             line_series = [v for v in grp["line"].tolist() if pd.notna(v)]
             out.append({
                 "player": first["player"], "snapshots": len(grp),
                 "first_line": first.get("line"), "latest_line": last.get("line"),
                 "line_move": move, "toward_away": _toward_away(first_side, latest_side, move),
                 "first_edge": first.get("edge"), "first_side": first_side,
-                "latest_edge": latest_edge, "latest_side": latest_side, "latest_tier": latest_tier,
-                "first_captured": first.get("captured_at"), "latest_captured": last.get("captured_at"),
+                "latest_edge": latest_edge, "latest_side": latest_side,
+                "latest_tier": latest_tier,
+                "first_captured": first.get("captured_at"),
+                "latest_captured": last.get("captured_at"),
                 "raw_line": last.get("line"), "raw_over_odds": last.get("over_odds"),
-                "raw_under_odds": last.get("under_odds"), "raw_projection": last.get("projection"),
+                "raw_under_odds": last.get("under_odds"),
+                "raw_projection": last.get("projection"),
+                "p_over": compute_p_over(market, last.get("projection"), last.get("line")),
                 "series": line_series,
             })
     return pd.DataFrame(out)
+
+
+def diagnose_lines(season, week, user, sport="NFL"):
+    """Row counts, distinct captures and multi-snapshot player counts per market.
+
+    Exists so an empty Line Movement tab can be diagnosed from inside the app
+    instead of from the Supabase SQL editor on a phone.
+    """
+    client = get_authed_client(user)
+    degraded = auth_degraded()
+    try:
+        rows = _fetch_lines_rows(client, sport, season, week, None, ascending=True)
+    except Exception as e:
+        return pd.DataFrame(), f"query failed: {e}"
+
+    if not rows:
+        note = f"0 rows for {season} wk{week}"
+        if degraded:
+            note += f" | session degraded: {degraded}"
+        return pd.DataFrame(), note
+
+    df = pd.DataFrame(rows)
+    df["player_norm"] = df["player"].apply(_norm_name)
+    summary = []
+    for mkt, grp in df.groupby("market"):
+        per_player = grp.groupby("player_norm").size()
+        summary.append({
+            "market": mkt,
+            "rows": len(grp),
+            "players": int(per_player.shape[0]),
+            "captures": int(grp["captured_at"].nunique()),
+            "players_2plus": int((per_player >= 2).sum()),
+            "null_projection": int(grp["projection"].isna().sum()),
+            "null_edge": int(grp["edge"].isna().sum()),
+        })
+    note = f"{len(df)} rows, {df['captured_at'].nunique()} distinct captures"
+    if degraded:
+        note += f" | session degraded: {degraded}"
+    return pd.DataFrame(summary).sort_values("market").reset_index(drop=True), note
+
+
+# ---------- Authentication ----------
+
+def sign_up(email, password):
+    """Create a new user account. Returns (success, message)."""
+    client = get_client()
+    try:
+        res = client.auth.sign_up({"email": email, "password": password})
+        if res.user:
+            return True, "Account created! You can now log in."
+        return False, "Sign up failed, please try again."
+    except Exception as e:
+        return False, f"Sign up error: {e}"
+
+
+def sign_in(email, password):
+    """Log in an existing user. Returns (user_dict_or_None, message).
+    The user dict carries the session tokens so an authenticated client can be
+    built once per session.
+    """
+    client = get_client()
+    try:
+        res = client.auth.sign_in_with_password({"email": email, "password": password})
+        if res.user:
+            clear_authed_client()  # never reuse a previous user's client
+            return {
+                "id": res.user.id,
+                "email": res.user.email,
+                "access_token": res.session.access_token,
+                "refresh_token": res.session.refresh_token,
+            }, "Logged in!"
+        return None, "Login failed, check your email and password."
+    except Exception as e:
+        return None, f"Login error: {e}"
+
+
+def sign_out():
+    """Drop the cached authenticated client so the next login builds a fresh one."""
+    clear_authed_client()
+    return True, "Logged out."
+
 
