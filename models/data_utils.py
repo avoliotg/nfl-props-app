@@ -3,28 +3,94 @@ Shared data-loading helpers that gracefully skip seasons whose data
 doesn't exist yet (e.g. a future season before it has been played).
 """
 import nflreadpy as nfl
+import os
+
+from datetime import date
 
 
-def _try_seasons(loader, seasons):
-    """Call an nflreadpy loader one season at a time; skip any that 404
-    (data not posted yet). Returns a combined pandas DataFrame of the
-    seasons that succeeded, plus the list of seasons actually loaded."""
+def _current_nfl_season():
+    """The season whose data should already be posted.
+
+    From mid-September onward the current season is under way, so its data
+    must exist and a failure to load it is a real failure. Before that, only
+    completed seasons can be required.
+    """
+    t = date.today()
+    if t.month > 9 or (t.month == 9 and t.day >= 15):
+        return t.year
+    return t.year - 1
+
+# nflreadpy's cache directory did not exist, so every call re-downloaded from
+# the network and a transient failure changed the dataset from run to run.
+# Filesystem caching makes the frames reproducible across runs and makes
+# build_dataset much faster. update_config works whatever the import order,
+# where the NFLREADPY_CACHE env var only applies before config is built.
+from nflreadpy.config import update_config
+update_config(cache_mode="filesystem")
+
+
+def _try_seasons(loader, seasons, required_through=None):
+    """Call an nflreadpy loader one season at a time.
+
+    A season that genuinely has no data yet (a future season) is skipped.
+    A season that FAILS for any other reason raises, because the old
+    behaviour swallowed every exception and returned a short frame. A
+    transient network failure on one season silently produced a dataset
+    missing roughly a third of its rows, and since no caller kept the second
+    return value, nothing surfaced it. The model then trained on whatever
+    arrived. Same failure class as the snap-count merge and the null
+    projections: a wrong answer with no error.
+
+    required_through: the last season that MUST load. Defaults to the latest
+    completed season inferred from the request, so history is mandatory and
+    only the newest season is allowed to be absent.
+    """
     import pandas as pd
+    seasons = list(seasons)
+    if required_through is None and seasons:
+        # Derive the requirement from the calendar, not from the request.
+        # Defaulting to max(seasons) - 1 left the CURRENT season as a soft
+        # skip, which is backwards: losing 2026 silently means projecting off
+        # the prior-season bridge alone with only a printed note to show it.
+        required_through = min(max(seasons), _current_nfl_season())
+
     frames = []
     loaded = []
+    failures = []
     for s in seasons:
         try:
-            df = loader([s]).to_pandas()
-            if len(df) > 0:
-                frames.append(df)
-                loaded.append(s)
-        except Exception:
-            # season data not available yet (e.g. future season) — skip it
+            raw = loader([s])
+            df = raw.to_pandas() if hasattr(raw, "to_pandas") else raw
+        except Exception as e:
+            failures.append((s, f"{type(e).__name__}: {e}"))
             continue
-    if frames:
-        return pd.concat(frames, ignore_index=True), loaded
-    # nothing loaded — return an empty frame
-    return pd.DataFrame(), loaded
+        if len(df) > 0:
+            frames.append(df)
+            loaded.append(s)
+        else:
+            failures.append((s, "returned 0 rows"))
+
+    # A season at or below required_through is history and must be present.
+    # Anything above it may legitimately not be posted yet.
+    hard_failures = [(s, msg) for s, msg in failures if s <= required_through]
+    if hard_failures:
+        detail = "; ".join(f"{s}: {msg}" for s, msg in hard_failures)
+        raise RuntimeError(
+            f"{getattr(loader, '__name__', 'loader')} failed for season(s) "
+            f"{[s for s, _ in hard_failures]} and returned partial data. "
+            f"Refusing to train on a short frame. Details: {detail}")
+
+    if failures:
+        skipped = [s for s, _ in failures]
+        print(f"NOTE: {getattr(loader, '__name__', 'loader')} skipped "
+              f"season(s) {skipped} (not posted yet)")
+
+    if not frames:
+        raise RuntimeError(
+            f"{getattr(loader, '__name__', 'loader')} loaded no seasons at all "
+            f"from {seasons}. Check network access and nflverse availability.")
+
+    return pd.concat(frames, ignore_index=True), loaded
 
 
 def load_player_stats(seasons):
