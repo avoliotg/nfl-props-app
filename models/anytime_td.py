@@ -201,11 +201,44 @@ def player_history(season, player_name, min_touches=0.5):
     return out.sort_values("week").reset_index(drop=True)
 
 
+@st.cache_data(show_spinner=False)
+def _all_player_stats():
+    """Unfiltered player stats for grading.
+
+    actual_result must NOT read build_dataset: that frame applies
+    `touches >= 3`, so any player with 0, 1 or 2 touches has no row and
+    returned None, and the bet silently never graded. Those players are
+    almost all non-scorers, so the rows that vanished were overwhelmingly
+    LOSSES, which flattered every TD calibration number.
+    """
+    ps = data_utils.load_player_stats(SEASONS)
+    return ps.to_pandas() if hasattr(ps, "to_pandas") else ps
+
+
 def actual_result(season, week, player_name):
-    """Did the player score a TD? Returns 100 (yes) or 0 (no), or None."""
-    df = build_dataset()
-    m = df[(df["season"] == season) & (df["week"] == week) &
-           (df["player_display_name"] == player_name)]
+    """Did the player score a TD? Returns 100 (yes) or 0 (no), or None.
+
+    Three distinct cases, and conflating them is what caused the bug:
+      - played and scored           -> 100
+      - played and did not score    -> 0    (a real loss, previously invisible)
+      - did not play at all         -> None (genuinely ungradeable)
+    """
+    ps = _all_player_stats()
+    m = ps[(ps["season"] == season) & (ps["week"] == week) &
+           (ps["player_display_name"] == player_name)]
     if len(m) == 0:
-        return None
-    return float(m.iloc[0]["scored"] * 100)
+        # normalised fallback: FanDuel and nflverse spell names differently.
+        # norm_join_name is vectorised, so both sides need a Series.
+        wk = ps[(ps["season"] == season) & (ps["week"] == week)].copy()
+        if len(wk):
+            target = data_utils.norm_join_name(pd.Series([player_name])).iloc[0]
+            wk["_norm"] = data_utils.norm_join_name(wk["player_display_name"])
+            m = wk[wk["_norm"] == target]
+    if len(m) == 0:
+        return None  # no stat row at all, so the player was inactive
+    row = m.iloc[0]
+    rush_td = row.get("rushing_tds")
+    rec_td = row.get("receiving_tds")
+    rush_td = 0.0 if pd.isna(rush_td) else float(rush_td)
+    rec_td = 0.0 if pd.isna(rec_td) else float(rec_td)
+    return 100.0 if (rush_td + rec_td) > 0 else 0.0

@@ -186,12 +186,37 @@ def player_history(season, player_name, min_carries=0.5):
     return out.sort_values("week").reset_index(drop=True)
 
 
+@st.cache_data(show_spinner=False)
+def _all_player_stats():
+    """Unfiltered player stats for grading.
+
+    actual_result must NOT read build_dataset: that frame drops every week
+    under 5 carries and every non-RB, so a backup who got 2 carries returned
+    None and the bet silently never graded, and no QB rushing bet could ever
+    grade at all. The lost rows average 5.0 rushing yards against 54.0 for the
+    rows that survived, so the missing grades were disproportionately busts.
+    """
+    ps = data_utils.load_player_stats(SEASONS)
+    return ps.to_pandas() if hasattr(ps, "to_pandas") else ps
+
+
 def actual_result(season, week, player_name):
     """Actual rushing yards for grading. Returns the number, or None."""
-    df = build_dataset()
-    m = df[(df["season"] == season) & (df["week"] == week) &
-           (df["player_display_name"] == player_name)]
+    ps = _all_player_stats()
+    m = ps[(ps["season"] == season) & (ps["week"] == week) &
+           (ps["player_display_name"] == player_name)]
+    if len(m) == 0:
+        # fall back to normalised matching: FanDuel and nflverse spell names
+        # differently ("Chris Rodriguez Jr." vs "Chris Rodriguez").
+        # norm_join_name is vectorised, so it needs a Series on both sides.
+        wk = ps[(ps["season"] == season) & (ps["week"] == week)].copy()
+        if len(wk):
+            target = data_utils.norm_join_name(pd.Series([player_name])).iloc[0]
+            wk["_norm"] = data_utils.norm_join_name(wk["player_display_name"])
+            m = wk[wk["_norm"] == target]
     if len(m) == 0:
         return None
     val = m.iloc[0]["rushing_yards"]
-    return None if pd.isna(val) else float(val)
+    # a player with a stat row was active, so a missing rushing line is a
+    # genuine zero, not an absence of data
+    return 0.0 if pd.isna(val) else float(val)
