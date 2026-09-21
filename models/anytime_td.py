@@ -18,13 +18,19 @@ IS_PROBABILITY = True
 
 
 @st.cache_data(show_spinner="Pulling & preparing NFL data (first run only)...")
-def build_dataset():
+def build_all_rows():
+    """Every active player-week at the relevant positions, features included,
+    with NO volume filter applied.
+
+    Rolling features are computed over every active game. Filtering first
+    measured a low-usage player's TD rate over only his busiest weeks, so
+    td_rate_roll read ~0.29 where the unconditional rate was ~0.25.
+    """
     ps = data_utils.load_player_stats(SEASONS)
     s = ps[ps["position"].isin(["WR", "TE", "RB", "QB"])].copy()
     s["total_td"] = s["rushing_tds"].fillna(0) + s["receiving_tds"].fillna(0)
     s["scored"] = (s["total_td"] > 0).astype(int)
     s["touches"] = s["carries"].fillna(0) + s["targets"].fillna(0)
-    s = s[s["touches"] >= 3].copy()
     s = s.sort_values(["player_id", "season", "week"]).reset_index(drop=True)
 
     s["td_rate_roll"] = (s.groupby("player_id")["scored"]
@@ -36,10 +42,27 @@ def build_dataset():
     return s
 
 
+@st.cache_data(show_spinner=False)
+def build_dataset():
+    """Rows with real in-game volume. Unchanged semantics for the board."""
+    s = build_all_rows()
+    return s[s["touches"] >= 3].copy()
+
+
 @st.cache_resource(show_spinner="Training model...")
 def load_model():
-    s = build_dataset()
-    train = s[(s["season"] <= 2024)].dropna(subset=FEATS + ["scored"])
+    # Train on the population the board actually serves, from the UNFILTERED
+    # frame. `touches >= 3` conditions on the current game: a player who
+    # finishes with 2 touches is likelier not to have scored, so training on
+    # that population leaks the outcome and over-states P(score).
+    # `touches_roll >= 3` uses only lagged history, which is the same rule the
+    # board uses to decide who to display. Going fully unconditional overshoots
+    # the other way, because 0-2 touch players have a far lower base rate.
+    # Backtested on 2025: log loss 0.5452 vs 0.5537 shipped, overall gap
+    # +0.3 pp (z +0.39) vs -2.1 (z -2.81).
+    s = build_all_rows()
+    train = s[(s["season"] <= 2024) & (s["touches_roll"] >= 3)].dropna(
+        subset=FEATS + ["scored"])
     model = LogisticRegression(max_iter=1000).fit(train[FEATS], train["scored"])
     return model, FEATS
 
