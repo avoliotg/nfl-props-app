@@ -3,4 +3,5 @@ venv/
 __pycache__/
 *.pyc
 data/bet_log.csv
-.streamlit/secrets.toml
+.streamlit/secrets.tomllines_cache.parquet
+probe_rushing*.py

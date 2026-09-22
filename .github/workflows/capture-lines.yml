@@ -1,0 +1,64 @@
+name: capture-lines
+
+# Runs live_capture.py on a clock so opening and closing snapshots are taken
+# whether or not the books have posted yet. Thin returns are expected early in
+# the week and cost almost nothing, because The Odds API does not charge for
+# markets that return no data.
+
+on:
+  workflow_dispatch:
+  schedule:
+    # All times are UTC. Eastern is UTC-4 until November 1 2026, after which
+    # every entry below fires one hour earlier in local terms.
+    #
+    # Base movement grid: every 4 hours, every day.
+    - cron: "23 1,5,9,13,17,21 * * *"
+    #
+    # Sunday afternoon closes. 16:23 UTC is 12:23pm ET, about 37 minutes before
+    # the 1pm window. 19:23 UTC is 3:23pm ET, about 42 minutes before 4:05 and
+    # 62 before 4:25.
+    - cron: "23 16,19 * * 0"
+    #
+    # Prime time closes. 23:23 UTC is 7:23pm ET, about 52 minutes before an
+    # 8:15pm kickoff. Thursday, Sunday and Monday.
+    - cron: "23 23 * * 0,1,4"
+
+# Off-the-hour minutes are deliberate. Scheduled Actions runs are best effort
+# and the top of the hour is the most congested slot, so :23 reduces drift.
+
+concurrency:
+  group: capture-lines
+  cancel-in-progress: false
+
+jobs:
+  capture:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          else
+            echo "no requirements.txt found, installing minimal set"
+            pip install requests pandas nflreadpy supabase
+          fi
+
+      - name: Capture
+        env:
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          OPAL_EMAIL: ${{ secrets.OPAL_EMAIL }}
+          OPAL_PASSWORD: ${{ secrets.OPAL_PASSWORD }}
+        run: python live_capture.py

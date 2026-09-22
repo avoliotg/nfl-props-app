@@ -1,5 +1,60 @@
 """
 Rushing Yards market module.
+
+PHASE 3.1: the carries_roll survivorship fix, plus two further instances of
+the same bug found in this file.
+
+WHAT WAS WRONG
+
+  1. carries_roll WAS COMPUTED AFTER THE VOLUME FILTER.
+     build_dataset filtered `carries >= 5` and then took a 6-game rolling mean
+     of carries, so a backup's workload feature was measured only over the
+     weeks the starter was hurt. Measured inflation was +6.31 carries in the
+     0-2 bucket, falling monotonically to +0.06 at 15 or more. Rolling
+     features now come from build_all_rows, which applies no volume filter,
+     exactly as anytime_td.build_all_rows does.
+
+  2. THE TRAINING POPULATION DID NOT MATCH THE SERVED POPULATION.
+     load_model trained on `carries_roll >= 5` while project_week serves
+     `carries_roll >= 1.5`, so the model was fitted on established backs and
+     then applied to players with a third of that workload. Surviving training
+     rows averaged 54.0 rushing yards against a true unconditional 32.5, which
+     inflated the intercept by roughly 66 percent for backups. This is the
+     same lesson anytime_td variant C taught in the other direction: the
+     training population must match the SERVED population, not the whole
+     league and not a higher-volume subset. Both thresholds now read
+     MIN_CARRIES_ROLL so they cannot drift apart again.
+
+  3. build_upcoming_week BRIDGED FROM THE FILTERED FRAME.
+     It read build_dataset() and averaged the last 6 games of carries, so
+     every Week 1 projection inherited the same inflation. It now reads
+     build_all_rows().
+
+  4. Null rushing_yards for an active RB is a genuine ZERO, not missing data,
+     so those rows were being dropped from training by dropna. A back with a
+     stat row and no carries belongs in the unconditional population. Same bug
+     family as Phase 3.4.
+
+  5. load_model hardcoded `season <= 2024`, which prevented eval_harness from
+     scoring the real model walk-forward. It is now a parameter.
+
+WHAT DELIBERATELY DID NOT CHANGE
+
+  build_dataset still applies `carries >= 5`, so the board, all_players and
+  player_history behave exactly as before. Only the ROLLING features and the
+  TRAINING population moved, which is the same split anytime_td uses.
+
+CONSEQUENCES TO MEASURE, NOT ASSUME
+
+  The projection distribution changes, so the shipped sigma 1.922*proj^0.7149
+  and the floor 34.5 were fitted against the OLD projections and are now
+  invalid. That is Phase 3.2 and it is not optional.
+
+  The serving population also shifts: carries_roll now includes low-carry
+  games, so every player's roll falls and some marginal backs drop below
+  MIN_CARRIES_ROLL. Those are exactly the obscure edge-target players the
+  strategy depends on, so run filter_diagnostics() and compare counts before
+  concluding the threshold is still right.
 """
 import numpy as np
 import pandas as pd
@@ -11,19 +66,21 @@ from sklearn.linear_model import LinearRegression
 SEASONS = [2022, 2023, 2024, 2025, 2026]
 LEAN_FEATS = ["carries_roll", "team_spread", "total_line"]
 
-# rushing yards — tiers in yards (like receiving, but rushing is noisier)
+# The board's display threshold AND the training threshold. One constant, so
+# the population the model is fitted on cannot drift away from the population
+# it is asked to score. See note 2 in the module docstring.
+MIN_CARRIES_ROLL = 1.5
+
+# Last season included in training by default. Parameterised so eval_harness
+# can score walk-forward instead of always training through 2024.
+DEFAULT_TRAIN_MAX_SEASON = 2024
+
+# rushing yards - tiers in yards (like receiving, but rushing is noisier)
 GAP_ANCHORS = [(0, 0.49), (3, 0.55), (7, 0.61), (15, 0.68), (30, 0.70)]
 
 
-@st.cache_data(show_spinner="Pulling & preparing NFL data (first run only)...")
-def build_dataset():
-    ps = data_utils.load_player_stats(SEASONS)
-    rush = ps[(ps["carries"].fillna(0) >= 5) & (ps["position"] == "RB")].copy()
-    rush = rush.sort_values(["player_id", "season", "week"]).reset_index(drop=True)
-
-    rush["carries_roll"] = (rush.groupby("player_id")["carries"]
-                            .transform(lambda s: s.shift(1).rolling(6, min_periods=1).mean()))
-
+def _attach_schedule(rush):
+    """Team spread and total from the schedule, one row per team-game."""
     games = data_utils.load_schedules(SEASONS)
     home = games[["season", "week", "home_team", "spread_line", "total_line"]].rename(
         columns={"home_team": "team"})
@@ -33,17 +90,87 @@ def build_dataset():
     away["team_spread"] = -away["spread_line"]
     team_game = pd.concat([home, away], ignore_index=True)[
         ["season", "week", "team", "team_spread", "total_line"]]
-    rush = rush.merge(team_game, on=["season", "week", "team"], how="left")
-    return rush
+    return rush.merge(team_game, on=["season", "week", "team"], how="left")
+
+
+@st.cache_data(show_spinner="Pulling & preparing NFL data (first run only)...")
+def build_all_rows():
+    """Every active RB player-week, features included, NO volume filter.
+
+    Position is a structural attribute of the player, so filtering on it
+    cannot condition on the outcome and is safe here. Carries are an in-game
+    result, so filtering on them before a rolling mean is what caused the bug.
+    """
+    ps = data_utils.load_player_stats(SEASONS)
+    ps = ps.to_pandas() if hasattr(ps, "to_pandas") else ps
+    rush = ps[ps["position"] == "RB"].copy()
+
+    # An RB with a stat row was active. No carries means zero carries and zero
+    # yards, not unknown, so these rows belong in the population rather than
+    # being silently dropped later by dropna.
+    rush["carries"] = rush["carries"].fillna(0)
+    rush["rushing_yards"] = rush["rushing_yards"].fillna(0.0)
+
+    rush = rush.sort_values(["player_id", "season", "week"]).reset_index(drop=True)
+    rush["carries_roll"] = (rush.groupby("player_id")["carries"]
+                            .transform(lambda s: s.shift(1).rolling(6, min_periods=1).mean()))
+    return _attach_schedule(rush)
+
+
+@st.cache_data(show_spinner=False)
+def build_dataset():
+    """Rows with real in-game volume. Unchanged semantics for the board."""
+    rush = build_all_rows()
+    return rush[rush["carries"] >= 5].copy()
 
 
 @st.cache_resource(show_spinner="Training model...")
-def load_model():
-    rush = build_dataset()
-    train = rush[(rush["season"] <= 2024) & (rush["carries_roll"] >= 5)].dropna(
+def load_model(train_max_season=DEFAULT_TRAIN_MAX_SEASON,
+               train_min_carries_roll=MIN_CARRIES_ROLL):
+    """Fit on the SERVED population, read from the unfiltered frame.
+
+    `carries >= 5` conditions on the current game: a back who finishes with 2
+    carries almost certainly gained few yards, so training on that population
+    leaks the outcome and over-states the level. `carries_roll >= 1.5` uses
+    only lagged history, which is the same rule project_week applies to decide
+    who appears on the board.
+    """
+    rush = build_all_rows()
+    train = rush[(rush["season"] <= train_max_season) &
+                 (rush["carries_roll"] >= train_min_carries_roll)].dropna(
         subset=LEAN_FEATS + ["rushing_yards"])
     model = LinearRegression().fit(train[LEAN_FEATS], train["rushing_yards"])
     return model, LEAN_FEATS
+
+
+def filter_diagnostics(season=2025):
+    """Before and after counts, so the change is measured rather than assumed.
+
+    Call from cmd or Colab:
+        from models import rushing; print(rushing.filter_diagnostics())
+    """
+    allr = build_all_rows()
+    filt = build_dataset()
+    a = allr[allr["season"] == season]
+    f = filt[filt["season"] == season]
+    served = a[a["carries_roll"] >= MIN_CARRIES_ROLL]
+    old_served = f[f["carries_roll"] >= MIN_CARRIES_ROLL]
+    return pd.DataFrame([
+        {"frame": "all active RB rows", "rows": len(a),
+         "mean_carries_roll": round(a["carries_roll"].mean(), 2),
+         "mean_rushing_yards": round(a["rushing_yards"].mean(), 1)},
+        {"frame": "carries >= 5 (board)", "rows": len(f),
+         "mean_carries_roll": round(f["carries_roll"].mean(), 2),
+         "mean_rushing_yards": round(f["rushing_yards"].mean(), 1)},
+        {"frame": f"served, carries_roll >= {MIN_CARRIES_ROLL}",
+         "rows": len(served),
+         "mean_carries_roll": round(served["carries_roll"].mean(), 2),
+         "mean_rushing_yards": round(served["rushing_yards"].mean(), 1)},
+        {"frame": "served within the filtered frame",
+         "rows": len(old_served),
+         "mean_carries_roll": round(old_served["carries_roll"].mean(), 2),
+         "mean_rushing_yards": round(old_served["rushing_yards"].mean(), 1)},
+    ])
 
 
 def available_seasons():
@@ -62,8 +189,7 @@ def available_weeks(season):
     return played + ([nxt] if nxt <= 22 else [])
 
 
-
-def project_week(season, week, min_carries=1.5):
+def project_week(season, week, min_carries=MIN_CARRIES_ROLL):
     model, feats = load_model()
     rush = build_dataset()
     wk = rush[(rush["season"] == season) & (rush["week"] == week)].copy()
@@ -97,7 +223,13 @@ def project_week(season, week, min_carries=1.5):
 def build_upcoming_week(season, week):
     """Manufacture player-week rows for a game not yet played (e.g. Week 1),
     bridging carries from the prior season. Fallback when build_dataset()
-    has no rows for the requested week."""
+    has no rows for the requested week.
+
+    Bridges from build_all_rows, NOT build_dataset. Reading the filtered frame
+    averaged only the weeks a back got 5 or more carries, so every Week 1
+    projection carried the same survivorship inflation the rolling feature
+    used to have.
+    """
     import nflreadpy as nfl
 
     ros = nfl.load_rosters([season])
@@ -107,7 +239,7 @@ def build_upcoming_week(season, week):
         columns={"gsis_id": "player_id"})
     ros = ros.dropna(subset=["player_id"]).drop_duplicates(subset=["player_id"])
 
-    rush = build_dataset()
+    rush = build_all_rows()
     prior = rush[rush["season"] == season - 1].sort_values(["player_id", "week"])
 
     def _bridge(g):

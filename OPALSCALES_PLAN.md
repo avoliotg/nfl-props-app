@@ -1,437 +1,427 @@
 # OpalScales Master Plan
-### Measurement first, then fixes, then new modeling
+### Measurement first, then population hygiene, then new modeling
 
-Written September 21, 2026, after Week 2 of the 2026 season.
-
----
-
-## The reasoning behind the ordering
-
-The project is currently **open-loop**. A change to a model cannot be evaluated
-against the market for weeks or months, because there are only 596 graded
-yardage rows and no historical lines. Every fix in the backlog is unfalsifiable
-today.
-
-That is the real bottleneck. Not the bugs, not the pricing layer, not the
-model. Three seasons of historical multi-book prop lines converts "we will know
-by Week 8" into "we will know in twenty minutes", across roughly 40,000 to
-80,000 prop rows instead of 596.
-
-So the data purchase comes before the fixes, and an evaluation harness comes
-before the fixes, because unmeasurable work on a model is how people spend
-years being wrong.
-
-**Budget: $59, one month of The Odds API, then cancel.**
+Rewritten September 22, 2026, evening. Replaces the version written
+September 21. Read `HANDOFF_2026-09-22_EVENING.md` alongside it for state and
+findings; this document is the project overview and the phased plan.
 
 ---
 
-## What is already established (do not redo)
+## WHAT THIS PROJECT IS
 
-Findings that are settled, so they do not get re-litigated:
+OpalScales is a personal NFL player-prop modeling and betting research app.
+It projects individual player statistics from public nflverse data, compares
+those projections to sportsbook lines, prices the disagreement as a
+probability, and displays an edge. It is used by Ted and a small friend group.
 
-- **The pricing assumption is rejected.** `(actual - line) = a + b(projection - line)`
-  gives pooled beta -0.079, SE 0.122, CI [-0.319, +0.161], t(beta=1) = **-8.81**.
-  All four markets agree. R-squared 0.0008.
-- **Out of sample, the projection is worse than the line alone.** RMSE proj
-  1.0917 vs RMSE line 1.0253 on Week 1, and 1.0430 vs 0.9784 on Week 2.
-- **Yardage line movement is unpredictable by the model.** Pooled b +0.006,
-  CI [-0.012, +0.023], toward share 0.505 (p 0.90), flat across all deviation
-  buckets.
-- **Anytime TD movement is partly real.** Baseline b +0.0512, placebo mean
-  +0.0198, so the honest effect is about +0.031. Test 3 with the shared term
-  removed gives +0.0253 (t +2.06). Odds series mean-revert (b -0.1947,
-  t -2.58), which is the artifact mechanism. Direction-only count is null at
-  0.472, so the effect may be about move size rather than direction. **A lead,
-  not an edge. Re-run at Week 5 and Week 8.**
-- **Range restriction, not structural failure**, explains the within-tier
-  correlation collapse. Observed within-tier correlations are roughly what the
-  Thorndike correction predicts.
-- **Monte Carlo is premature.** Closed-form gamma and negative binomial are
-  exact for marginal single-stat distributions and validated to 1 to 2 pp. MC
-  becomes necessary only for **joint** distributions (correlated props, SGP) or
-  a play-by-play engine.
-- **Rejected and closed:** XGBoost, qb_passing feature hunt (two rounds),
-  early-season hierarchical shrinkage, postseason exclusion from rolling
-  windows, the qb_rushing quintile-4 defect, home/road splits, a standing
-  parallel Bayesian system, and the weeks-1-to-4 correction.
+**Stack:** Streamlit front end, Supabase Postgres, nflreadpy/nflverse for
+player stats and schedules, The Odds API for lines. Six live markets:
+receiving yards, receptions, rushing yards, QB passing yards, QB rushing
+yards, anytime TD.
 
-Fixes already shipped today:
+**The stated product vision:** loud when there is something to say, silent
+otherwise. An edge column that fires on some weeks and stays quiet on others,
+rather than manufacturing a number for every prop on the board.
 
-- `rushing.actual_result` and `anytime_td.actual_result` no longer read
-  filtered frames. Surfaced 282 previously invisible graded rows.
-- `anytime_td` rolls features before the volume filter and trains on the
-  serving population (`touches_roll >= 3`). Backtested: log loss 0.5452 vs
-  0.5537, AUC 0.654 vs 0.639, calibration gap +0.3 pp (z +0.39) vs -2.1 (z -2.81).
-- `data_utils._try_seasons` raises on a failed season fetch instead of
-  silently returning a short frame. nflreadpy filesystem caching enabled.
-  Baseline: 78,041 player-stat rows across 2022-2026.
-- `db.py` rewritten: one authenticated client per session (fixes the
-  single-use refresh token exhaustion that blanked Line Movement),
-  pagination past the 1000-row PostgREST cap, non-silent query failures,
-  `compute_p_over` added.
+**Where it stands:** the projection layer works as a projection layer. The
+pricing layer overstates edges. Of four measurable markets, exactly one
+(receptions) contains information the closing line does not already price, and
+even that one does not yet clear the vig. See the handoff for numbers.
 
 ---
 
-## JUMP THE QUEUE (do these regardless, they are cheap)
+## THE REASONING BEHIND THE ORDERING
 
-**J1. Do not bet Week 3 on displayed edges.**
-Thirty seconds, no code. The measured relationship between tier size and
-outcome is inverted at |z| near 4 in both tails. The 0.20-0.40 band came in
-+20.1 pp (z +4.84), the 0.60-0.80 band -22.4 pp (z -3.85). Max and Strong are
-currently the worst-calibrated bets on the board.
+### Why measurement came first (and this was right)
 
-**J2. RLS.** (old item 8)
-`authenticated_read_lines` is still `USING (true)`, so any authenticated user
-can read the whole lines table. Ten minutes. Note the historical fix: the app
-now threads real user sessions through `get_authed_client`, so `auth.uid()`
-resolves at the DB and a proper policy will work.
+In September the project was **open-loop**: a change to a model could not be
+evaluated against the market for weeks, because there were 596 graded rows and
+no historical lines. Every fix in the backlog was unfalsifiable.
 
-**J3. The `p_over` one-liner in `app.py`.**
-In the Line Movement save block, change `"p_over": None,` to
-`"p_over": savable["p_over"] if not is_td else None,`. `get_line_movement`
-already computes it.
+Three seasons of historical multi-book prop lines for $59 converted "we will
+know by Week 8" into "we will know in a minute". That was the right call and
+it has already paid for itself several times over, mostly by killing ideas.
 
----
+### Why population hygiene comes before new modeling (learned September 22)
 
-## PHASE 0: Validate the API for free (today, $0)
+The backlog was framed as bug fixes with incidental effects on accuracy. It is
+not. **Two of the four measured betas were entirely artifacts of volume
+filters in the evaluation sample.** Rushing went from 0.337 to -0.032 and
+qb_passing from 0.402 to 0.075 when the filters came out of the instrument.
 
-Goal: confirm the data is usable before spending anything.
+That means population hygiene is not cleanup, it is the difference between
+measuring the model and measuring the filter. Any new modeling done before the
+populations are clean is modeling against corrupted feedback.
 
-**0.1** Get a free API key at `the-odds-api.com`. Note there is a lookalike
-site at a similar domain; the real one carries an impersonation warning in its
-own footer.
+### Why more data and more features are NOT next
 
-**0.2** Write `odds_api_check.py`:
-- Hit the `events` endpoint for `americanfootball_nfl` (free, 1 credit)
-- Hit `event-odds` for one game with all five market keys
-- Confirm `fanduel` and `draftkings` both appear as bookmaker keys
-- Confirm the five markets return data: `player_reception_yds`,
-  `player_receptions`, `player_rush_yds`, `player_pass_yds`,
-  `player_anytime_td`
-- Match returned player names against nflverse via `data_utils.norm_join_name`
-  and report the unmatched rate
-- Compare one line against what FanDuel shows in the app right now
-- Log the `x-requests-used` and `x-requests-last` response headers
-- **Also confirm NHL**: hit `icehockey_nhl` events and check that
-  `player_shots_on_goal` returns data. Other NHL keys seen in the wild are
-  `player_points`, `player_assists`, `player_power_play_points`,
-  `player_blocked_shots` and `player_goals`, but coverage changes over time so
-  verify the exact set rather than assuming. NHL games may not be listed until
-  closer to the season opener, in which case check a historical event instead.
+Two measurements settled this. `--fixed-train 2022` trained one model on 4,608
+rows and scored four seasons, giving pooled beta 0.230 against walk-forward
+0.229 with up to 20,313 rows. More training data does not improve the edge
+over the line at all. And the in-sample gap is 0.012, so the models are not
+overfitting either. The constraint is not sample size and not variance. It is
+that the features carry information the market already prices.
 
-**Gate:** if the unmatched name rate is above roughly 5%, or FanDuel props are
-missing, stop and reassess before paying. Budget about 30 credits.
-
-**Note:** `player_rush_yds` is one market covering both RB and QB rushing, so
-five market keys cover all six app markets.
-
-### Phase 0 RESULT (run September 21, 2026, 5 credits used)
-
-**NFL: PASS.**
-- Five books returned: fanduel, draftkings, betmgm, betrivers, betonlineag
-- All five market keys returned data. Samples looked correct: Jaxson Dart pass
-  yards 213.5 at -113, Theo Johnson receiving 8.5 at -113
-- `player_anytime_td` returns `name: "Yes"` with `point: NA`, which matches how
-  the app already stores it
-
-**Name matching: PASS, despite the script flagging 21%.** The seven unmatched
-names were four team defenses (excluded anyway), two rookies with no stat rows
-yet (CJ Daniels, Max Klare), and Odell Beckham Jr., who normalised correctly to
-`odell beckham` but has no recent stat row. Real skill-player match rate is 26
-of 27. `norm_join_name` is working; the headline rate was an artifact of a
-33-name sample where a third are structurally unmatchable.
-
-**NHL: FAIL for now.** All six prop keys returned zero books. See the NHL
-question under Phase 1.
+That points at exactly one idea on the list: the **line-as-feature model**,
+which searches for the residual the market omits by construction rather than
+competing with the market's own information.
 
 ---
 
-## PHASE 1: Buy and backfill (this week, $59)
+## THE BUG PATTERN (read this before touching any model)
 
-**Credit arithmetic, confirmed from the docs. The formula is sport-agnostic:**
+Every significant bug found in this project has the same shape: **a filter on
+an in-game result applied before something that must not see it.** Four places
+it bites:
+
+1. **Before a rolling feature.** The feature is measured only over games the
+   player qualified, so a backup's workload reads like a starter's. Measured
+   inflation in rushing `carries_roll`: +6.31 carries in the 0-2 bucket,
+   falling monotonically to +0.06 at 15 or more.
+2. **On the training population.** The model is fitted on survivors and then
+   scores everyone, which is extrapolation below the training range. Rushing
+   trained on rows averaging 57.2 yards and served a population averaging
+   32.5.
+3. **On the grading path.** The bet never grades, and the missing grades are
+   disproportionately losses, which flatters the record.
+4. **On the EVALUATION population.** The measured beta, over rate, ROI and
+   calibration are computed on a sample conditioned on the outcome. **Fixing
+   1 through 3 does not fix 4.**
+
+**The tell is the join rate, not the calibration table.** Survivorship leaves
+calibration looking fine, because alpha absorbs the shift: a filtered market
+prices P(over) at 0.61 and the filtered sample delivers 0.609. It is
+calibrated to a population that is not the one the line was set for.
+
+Demonstrated on synthetic data with zero signal by construction: a filter
+removing 5.4 percent of rows non-randomly produced ROI from +0.073 to +0.163
+with t-statistics from +9.8 to +12.9.
+
+**Rule: any `build_dataset` that filters on an in-game statistic needs a
+`build_all_rows` sibling with the rolling features computed over the
+unfiltered frame, the training gate matched to the serving gate, grading read
+from unfiltered stats, and the harness scoring the sibling.**
+
+Instances found and fixed: `anytime_td` (`touches >= 3`), `rushing`
+(`carries >= 5`), `qb_passing` (`attempts >= 10`). Instances remaining: the
+`targets_roll >= 3` training gate in `receiving` and `receptions`, and
+`qb_rushing.actual_result`.
+
+---
+
+## WHAT IS ESTABLISHED (do not redo)
+
+Summarised here; the handoff carries the numbers and confidence intervals.
+
+- Receptions is the only market with signal: beta 0.275, SE 0.029, t +9.45.
+- Rushing and qb_passing carry zero signal. Their earlier betas were filters.
+- Receiving is near zero at beta 0.093.
+- Pooled beta is 0.172 but must not be used in pricing; use per-market betas.
+- The pricing assumption `beta = 1` is rejected at t = -36.34.
+- The raw projection is worse than the line as a mean estimate in every market.
+- No edge threshold is established: pooled holdout ROI +0.0183, SE 0.0741.
+- The alpha betting edge is dead. Receiving over rate 0.4912 against a 0.5305
+  breakeven. Alpha remains a valid PRICING parameter.
+- Shopping adds no forecast value (best-line beta artifact-corrected from
+  0.345 to 0.156) but does add real price value, about 1.7 to 3.2 points of
+  win probability on 2025's 8-book data.
+- Sigma must be level-dependent; the shipped functional form was right.
+- The gamma is over-skewed by 3.6 to 4.1 points at zero deviation; the
+  negative binomial is exact to 0.1.
+- The pricing layer is over-dispersed rather than biased: unconditional
+  calibration is +1.1 pp overall but +7.3 at the bottom band and -11.6 at the
+  top.
+- The winner's curse from side selection costs about 4.3 points of win
+  probability, which is larger than the vig.
+- Lead-time contamination in the backfill is real and irrelevant. No re-pull.
+- Early-season beta is higher than full-season, not lower.
+- More training data does not help. No overfitting.
+- Monte Carlo is premature for marginal single-stat distributions. It becomes
+  necessary only for joint distributions or a play-by-play engine.
+- Receptions is 93 percent flat on the line because FanDuel moves reception
+  prices through the ODDS, so Line Movement measures the wrong quantity there.
+- Books post anytime TD early and yardage late. A Tuesday Week 3 capture
+  returned 87 percent anytime TD rows and yardage only one or two games deep.
+
+---
+
+## JUMP THE QUEUE
+
+**J0. Fire the GitHub Actions capture workflow.** Time-sensitive and still not
+done. `.github/workflows/capture-lines.yml` is written. Commit it, add the
+five repo secrets, fire it manually before trusting the cron. Opening lines
+are the only perishable thing in this plan: historical data is not going
+anywhere, but Thursday's pre-movement numbers will be gone permanently.
+
+**J1. Do not bet on displayed edges as probabilities.** Now supported by
+measurement rather than by a calibration curiosity. 65.3 percent of props show
+a positive edge after shrinkage, which is arithmetically impossible against a
+6 percent hold unless the layer is miscalibrated. Three of four markets have
+zero signal.
+
+**J2. RLS on `lines`.** `authenticated_read_lines` is still `USING (true)`, so
+any authenticated user can read the whole table. **There are 17 registered
+users**, several signing in as recently as September 20. The working pattern is
+proven on `historical_lines`:
+
+```sql
+create policy "owner full access" on historical_lines
+  for all to authenticated
+  using (auth.uid() = user_id) with check (auth.uid() = user_id);
+```
+
+Ten minutes. `db.py` now threads real user sessions through
+`get_authed_client`, so `auth.uid()` resolves at the database.
+
+**J3. The `p_over` one-liner in `app.py`.** In the Line Movement save block,
+change `"p_over": None,` to `"p_over": savable["p_over"] if not is_td else
+None,`. `get_line_movement` already computes it.
+
+**J4. Add an empty `models/__init__.py`.** Imports currently work via
+namespace-package resolution. Nothing is broken; this removes a class of
+surprise.
+
+---
+
+## PHASE 1: DATA (complete, with one decision outstanding)
+
+**1.1 to 1.5 complete.** The Odds API $59 tier, 100,000 credits. Backfill of
+2023, 2024, 2025 closing snapshots plus 2026 weeks 1 and 2. 865 events,
+354,554 rows, 8 books, zero null weeks.
+
+**Credit arithmetic (confirmed, sport-agnostic):**
 
 ```
 live:       markets x regions        credits per event
 historical: markets x regions x 10   credits per event
-historical events endpoint           1 credit per call
+events endpoint (live)               free
+events endpoint (historical)         1 credit per call, PAID PLANS ONLY
 ```
 
-There is no sport multiplier. An NHL game with one market costs 10 credits
-historically, an NFL game with five costs 50. NHL is only expensive because it
-has 1,312 regular season games against the NFL's 272.
+No sport multiplier. Empty responses are not charged. **Credits are charged
+per market that RETURNS data, not per market requested**, which is why a Week
+3 live capture estimated 80 and was charged 24.
 
-`regions=us` returns **every US book in one call**, so multi-book costs nothing
-extra. That means all of Phase 4.1 comes free with the ingest. Player prop
-history is available after 2023-05-03, and snapshots exist at 5-minute
-intervals from September 2022.
+Five NFL market keys cover all six app markets because `player_rush_yds`
+contains both RB and QB rushing: `player_pass_yds`, `player_rush_yds`,
+`player_reception_yds`, `player_receptions`, `player_anytime_td`.
 
-Five NFL market keys cover all six app markets, because `player_rush_yds` is
-one market containing both RB and QB rushing.
+**Credits remaining: approximately 56,700, expiring mid-October.**
 
-### Budget: 100,000 credits
+**1.6 The outstanding decision: 2026 as a complete season.** Credits are a
+monthly allocation and do not survive cancellation. A full 2026 closing
+backfill cannot be done now because the games have not been played. Getting
+2026 on the same instrument as 2023 through 2025 means one more month of
+subscription in February. Cheap, but decide deliberately rather than
+discovering it in January.
 
-**Revised after Phase 0.** NFL coverage confirmed excellent: five books
-(fanduel, draftkings, betmgm, betrivers, betonlineag) and all five market keys
-returning data. NHL returned **zero books on all six prop keys**, so NHL is
-held out of the purchase until that resolves. See the NHL note below.
+**1.7 Budget for the remaining window:**
 
-Five books per prop at no extra credit cost also makes the consensus and
-disagreement work in Phase 4.1 much stronger than the two books originally
-planned for.
-
-| pull | games | snaps | per call | credits |
-|---|---|---|---|---|
-| NFL 2025 historical, opening + closing | 272 | 2 | 50 | 27,200 |
-| NFL 2024 historical, opening + closing | 272 | 2 | 50 | 27,200 |
-| NFL 2023 historical, closing | 272 | 1 | 50 | 13,600 |
-| NFL playoffs, 3 seasons, closing | 39 | 1 | 50 | 1,950 |
-| historical events endpoint, event IDs | | | 1 | ~60 |
-| retries, mistakes, live capture | | | | ~5,000 |
-| **subtotal** | | | | **~75,000** |
-| **reserve, for NHL if it materialises** | | | | **~25,000** |
-
-Two full seasons of historical line **movement** instead of one, which
-strengthens the CLV work, plus a 25,000 credit reserve.
-
-Note: prop history starts 2023-05-03, so the 2022 season is **not** available.
-2023, 2024 and 2025 is the complete set.
-
-Live capture during the subscription month is nearly free by comparison:
-
-```
-NFL live:  5 markets x 1 region = 5 credits per game = 85 per 17-game slate
-NHL live:  1 market  x 1 region = 1 credit per game  = ~8 per day
-```
-
-| live pattern | credits |
+| item | credits |
 |---|---|
-| NFL, 3 captures per week, 5 weeks | ~1,300 |
-| NFL, 6 captures per week, 5 weeks | ~2,600 |
-| NFL, 12 captures per week, 5 weeks | ~5,100 |
+| live capture through mid-October, 47 runs a week | ~15,000 |
+| NHL historical, two past seasons at 10 credits a game | ~26,000 |
+| reserve | ~15,000 |
 
-Even twice-daily NFL capture for the whole month fits inside the retry
-allowance. During the subscription month, capture as often as convenient.
+**1.8 Cancel a few days before the renewal date**, not as soon as the backfill
+verified. Cancelling ends the dense capture window, and the free tier supports
+only about one NFL capture a week. Disable or thin the Actions workflow in the
+same sitting or it will blow through the free 500 credits a month.
 
-### The NHL question (unresolved)
-
-Phase 0 probed six NHL prop keys against a September 29 game and every one
-returned zero books. The probes cost nothing, since the API does not charge
-when there is nothing to return.
-
-Two explanations with very different consequences:
-
-1. **Books have not posted props yet.** Props typically appear a day or two
-   before puck drop, not a week out. If this is it, live props appear in
-   October and historical props probably exist for past seasons.
-2. **The Odds API does not carry NHL player props.** The market lists found
-   were from a third-party R wrapper and secondary sources, not the official
-   docs, so they may have been over-trusted.
-
-**Resolution, cheap:** re-run the NHL section of `odds_api_check.py` once a
-game is within 48 hours. If props appear live, historical almost certainly
-exists and the 25,000 reserve buys two seasons of shots on goal. If they still
-do not, NHL is out and the reserve goes to more NFL depth or simply unspent.
-
-Do not include NHL in the purchase decision until this resolves.
-
-### Why shots on goal for NHL, if it materialises
-
-Chosen over points and goals because it is the most projectable NHL market, for
-the same reasons receptions outperforms anytime TD in this project:
-
-- **Event counts are high enough.** A top forward takes 3 to 4 shots a game, so
-  the mean is 2 to 3.5 and the outcome is not luck-dominated. Points average
-  0.6 to 1.0, and goals require a shot AND a conversion, which is a rare event
-  stacked on a common one.
-- **Assists are the least projectable component of any hockey stat.** A point is
-  either your own goal or someone else's goal you touched, and the second half
-  is close to a coin flip conditional on linemates scoring.
-- **Shots are a role and usage statistic**: ice time, power play deployment,
-  shot rate per minute. Stable and autocorrelated, which is exactly what the
-  EWMA work exploits.
-- **Lines sit at 1.5, 2.5, 3.5**, a coarse integer grid relative to the
-  distribution, which is precisely the condition in Phase 4.5 where the line
-  cannot sit at the median and distributional edge can exist. The negative
-  binomial work from receptions transfers directly.
-
-Two seasons of the market that would actually be modelled beats shallow
-coverage of two markets.
-
-**Open question to resolve before modelling NHL:** shots on goal counts only
-shots reaching the net, not blocked or missed attempts. Check the quality of
-the free hockey data ecosystem against nflverse before committing to a model. A
-good line dataset with poor stat data is only half useful.
-
-### Steps
-
-**1.1** Subscribe to the $59 / 100,000 credit tier.
-
-**1.2** Schema. Add `book` to the existing `lines` table:
-```sql
-alter table lines add column book text not null default 'fanduel';
-```
-Existing 6,807 snapshots become FanDuel rows retroactively. No migration.
-Create a separate `historical_lines` table for the backfill so the live table
-stays clean, with columns: `sport, book, season, week, market, player, line,
-over_odds, under_odds, captured_at, event_id, commence_time, snapshot_label`
-where `snapshot_label` is `opening` or `closing`. Include `sport` from the
-start so NHL rows coexist rather than needing a later migration.
-
-**1.3** Write `odds_backfill.py`. Requirements:
-- **Resumable.** Track completed `(event_id, snapshot_label)` pairs in a table
-  or local file. At 50 credits per game a restart is expensive.
-- **Credit-aware.** Read `x-requests-used` and `x-requests-last` after every
-  call, log burn rate, and hard-stop at a configurable ceiling.
-- **Verify before proceeding.** Pull NFL 2025 first and inspect it. A gappy
-  2023 is then a cheap discovery rather than an expensive one.
-- Closing snapshot: roughly 30 to 60 minutes before `commence_time`.
-- Opening snapshot: earliest available, typically Tuesday or Wednesday.
-- Handle the empty-response case: a call returning no events is not charged,
-  but it should be logged, not silently skipped. Same principle as the
-  `_try_seasons` fix.
-
-**1.4** Order: NFL 2025, verify, then NFL 2024, NFL 2023, then NHL 2025-26,
-then NHL 2024-25. NFL first because it unblocks Phase 2 and 3, which are the
-critical path. NHL is banked data with no immediate dependency.
-
-**1.5** Cancel the subscription **after** the backfill completes and the data
-is verified in Supabase, not before. Cancellation is via a form or the
-accounts portal and takes effect before the next billing cycle. Do not risk
-losing access with unused credits.
-
-**1.6** After cancelling, note that live capture continues to be viable on the
-free 500-credit tier, but only for one sport at a time: NFL at 5 markets is
-about 320 credits a month for one capture per week, and NHL shots at 1 market
-is about 440 a month for one capture per game day. Both together exceed 500.
+**1.9 The known backfill defect, documented and NOT worth fixing.** The
+closing timestamp was computed as placeholder kickoff minus 45 minutes using
+the September enumeration, while `commence_time` stores the real kickoff. 38
+events are outside a 20 to 90 minute window, 5 of them captured after kickoff.
+Gated as irrelevant: filtering changes pooled beta by 0.000. If it is ever
+worth re-pulling, drive the request timestamp from the stored actual
+`commence_time`, and note that **mid-season enumeration is week-scoped for
+free** (a September 1 call returns all 272 games; a September 15 call returns
+16).
 
 ---
 
-## PHASE 2: The evaluation harness (the centerpiece)
+## PHASE 2: THE EVALUATION HARNESS (complete, and it is the asset)
 
-This is the thing that makes every later phase measurable. Build it once,
-then run it after every change.
+`eval_harness.py` and `edge_threshold.py`. Run both after every change.
 
-**2.1** `eval_harness.py`. Takes the models as they are, scores three seasons
-of games, joins to historical closing lines, and reports per market and pooled:
-- **beta** with HC1 and game-clustered standard errors
-- **alpha**, the mean-versus-median offset per market
-- **calibration** against real lines by probability band
-- **RMSE** of three predictors: line alone, projection alone, blend
-- **AUC** and log loss
-- **residual SD**, which is the correct sigma for pricing around a blended mean
+What the harness reports: beta with game-clustered standard errors per market,
+per season in sigma units and pooled; alpha; the **empirical over rate** with
+a clustered SE; out-of-sample blend RMSE against line and projection;
+residual SD; training counts; a join diagnostic naming the most frequent
+unjoined players per market; and a shopping table measuring realized win rate
+at each line source with the side held fixed.
 
-Out of sample by construction: models train on 2022-2024, so score 2025
-separately from 2023-2024 and report both.
+What `edge_threshold.py` reports: leave-season-out shrinkage parameters;
+level-dependent sigma with a span gate; the zero-deviation pricing check;
+unconditional and conditional calibration (the difference is the winner's
+curse); threshold curves with clustered SEs; a tail profile showing what the
+winning bets consist of; and a holdout where the threshold is chosen on other
+seasons and spent on the held-out one.
 
-**2.2** Cluster standard errors by game. (previously noted as a caveat)
-Props within one game share information. The historical data includes
-`event_id`, so this is now straightforward and makes every CI honest.
+**The three habits that make it trustworthy, all of which caught something
+real:**
 
-**2.3** Establish the baseline. Run the harness before touching any model, and
-record the numbers. Everything in Phase 3 is measured against this.
+1. **Nothing is fitted on the rows it scores.** Beta and alpha come
+   leave-season-out; blend RMSE uses 5-fold CV grouped on `event_id`;
+   thresholds are chosen out of sample. Every in-sample number in the output
+   is labelled as biased upward.
+2. **Every claim has a placebo or a null.** The best-line beta has a
+   permutation test. The synthetic smoke tests use known-zero signals so a
+   tool that reports an edge on them is broken.
+3. **Composition is inspected, not just the coefficient.** The tail profile
+   is what detects survivorship, because survivorship shows up as profit
+   rather than as a calibration failure.
 
----
+**Implementation notes worth preserving:**
 
-## PHASE 3: Bug fixes, each one measured
-
-Every item here gets the harness run before and after. A fix that does not move
-the numbers gets reverted or reconsidered rather than kept on faith.
-
-**3.1** Rushing `carries_roll` survivorship. (old item 5)
-`build_dataset` filters `carries >= 5` before the rolling mean, so a backup's
-workload feature is measured only from weeks the starter was hurt. Inflation is
-+6.31 carries in the 0-2 bucket, falling monotonically to +0.06 at 15+. The
-training population is also wrong: surviving rows average 54.0 rushing yards
-against a true unconditional 32.5, so the intercept is inflated by roughly 66%
-for backups. This is the largest known distortion in the codebase and produced
-projections of 39.9 for Justice Hill against a 13.5 line (he ran for 6).
-Apply the same shape as the `anytime_td` fix: roll over all active games, then
-filter, and train on the serving population rather than the in-game-volume one.
-
-**3.2** Refit the rushing sigma and floor. (part of old item 5)
-Sigma `1.922 * proj^0.7149` and floor 34.5 were fitted against the OLD
-projections. Changing the projection distribution invalidates them. Non-optional
-consequence of 3.1.
-
-**3.3** qb_passing `attempts >= 10`. (old item 3)
-Same survivorship shape. Benched, injured and blowout games are deleted from
-training, removing the left tail, and those bets also silently fail to grade.
-Most likely mechanism behind the +8.81 bias that appears in all sixteen
-subgroup cells. Note the bias is slope-shaped (rising +1.06 to +10.48 across
-quintiles), so a level correction is the wrong fix.
-
-**3.4** `receiving` and `receptions` `actual_result`. (old item 4)
-Both return `None` when the stat is null for an active player, where 0 is
-correct. Neither `build_dataset` applies a volume filter, so this is smaller
-than the rushing and TD versions, but it is the same bug family.
-
-**3.5** WR receptions bias. (old item 7)
-+0.30 at **z = +5.39** on 1,456 rows, the largest single measured effect in the
-subgroup output and still unfixed. At a 4.5 line with sigma about 2.49 that is
-roughly 0.12 sigma, overstating P(over) by about 5 pp. High-volume receptions
-is worse at +0.32 (z +3.15) with the worst calibration gap in the file (-4.6).
-
-**3.6** RB receiving as a yards-per-reception problem.
-RB receptions bias is -0.16 while RB receiving yards is +3.86 (z +3.59). At
-about 7 yards per catch the reception shortfall predicts -1 yard, so the entire
-error lives in **ypt, not volume**. Fix the RB ypt feature, not the RB level.
-
-**3.7** The `qb_rushing` market label. (old item 6)
-`MARKET_MAP` in `import_lines` has no `qb_rushing` key, so QB rushing props
-store as `market = 'rushing'`. The `is_qb_model` flag routes the edge
-calculation correctly in memory but never reaches the database, so anything
-repricing from `(market, projection, line)` uses the RB sigma and the 34.5
-floor instead of `4.624 + 0.7246*proj` and 1.5. Currently zero graded
-qb_rushing rows exist.
-
-**3.8** Audit every `build_dataset` filter for survivorship. (old item 17)
-Three instances of the same bug turned up by looking at six files. The pattern
-is always: a filter applied before a rolling feature, or a filtered frame used
-for grading. Worth a systematic pass rather than waiting to trip over the next
-one.
-
-**3.9** Investigate the 7-row receiving anomaly.
-Predicted 0.218, actual 0.857, z +4.83 in the 0.00-0.25 band. Small n, but
-these appeared with the newly graded rows and may be a fourth instance of the
-survivorship pattern.
-
-**3.10** Re-estimate beta on the full historical data. (old item 9)
-The current beta was measured on projections containing all of the above
-errors. This is the honest measurement of where the project stands, and it is
-the number that decides how much of Phase 5 is worth doing.
+- `--score-population {all,board}` decides whether the EVALUATION population
+  is `build_all_rows()` or `build_dataset()`. Default `all`. This flag is the
+  single most consequential line in the harness.
+- The best-line placebo permutes the **deviation**, not the projection.
+  Permuting the projection breaks the pairing between a projection and its own
+  line and understates the artifact sevenfold.
+- Per-season pooling must be in **sigma units** with scales computed once per
+  market across all seasons, or passing yards swamps receptions and the
+  coefficient is meaningless.
+- `--cache lines_cache.parquet` appends only missing seasons. 354,554 rows at
+  1,000 a page is 355 round trips.
+- `--fixed-train YEAR` holds the model constant across seasons, which
+  separates instability from training-size effects.
 
 ---
 
-## PHASE 4: New modeling, unblocked by the data
+## PHASE 3: POPULATION HYGIENE (the critical path)
 
-**4.1** Multi-book consensus and disagreement. (old item 10)
-Comes free in credit terms since `regions=us` returns all books per call.
-Display changes shape: instead of model-versus-FanDuel edge, show per-book
-lines, **consensus** (median across books, robust to one stale outlier), and
-**disagreement** (spread between books). Disagreement becomes the primary
-signal, and it naturally fires on some weeks and stays quiet on others, which
-is the behaviour originally wanted from the edge column.
+Every item gets the harness run before and after. A fix that does not move the
+numbers gets reverted or reconsidered rather than kept on faith.
 
-Requirements:
-- Consensus only where 2+ books have a line; show "1 book" rather than a
-  misleading zero
-- Match each book's **nearest capture within an hour or two**, and flag when it
-  cannot. Comparing a Thursday FanDuel line to a Sunday DraftKings line
-  measures the capture schedule, not disagreement.
-- `PRIMARY_BOOK = "fanduel"` constant so all existing behaviour is unchanged
-  by default and multi-book is additive
-- Record which book a bet was placed at in `bets`, so shopping value becomes
-  measurable
+**3.1 Rushing `carries_roll` survivorship. DONE.** Rolling features moved to
+`build_all_rows`, training gate matched to the serving gate at
+`MIN_CARRIES_ROLL = 1.5`, Week 1 bridge moved off the filtered frame, null
+`rushing_yards` treated as zero, `load_model` parameterised on the training
+cutoff. Result: beta 0.337 to -0.032, join rate 48.2 to 59.3 percent, over
+rate 0.5380 to 0.4721, served players 102 to 127 with none lost.
 
-**4.2** Line shopping as a first-class product.
-The highest-confidence edge available, requiring no forecasting skill. Maye at
-234.5 on FanDuel against 232.5 and 230.5 elsewhere is a 4-yard spread on one
-player. Worth roughly 2 to 3% of turnover. Both uses matter: consensus as a
-better mean estimate, and best-available price as directly capturable value.
+**3.2 Refit the rushing sigma and floor. NEXT, and non-optional.**
+`1.922*proj^0.7149` and floor 34.5 were fitted against projections that no
+longer exist. Given beta is now zero, the correct display for rushing may be
+no edge at all.
 
-**4.3** Line-as-feature model. (old item 12)
-This is the conceptual unlock. Rather than building a projection from features
-and comparing it to the line, put the line in as a regressor:
+**3.3 qb_passing `attempts >= 10`. DONE.** Same four fixes plus two more: a
+**full-sample statistic leak** in the `def_pass_roll` fallback (the league
+mean was taken over all five seasons, so a 2023 row was filled partly from
+2025; now an expanding mean in chronological order), and `def_pass_roll` now
+computed from all QB rows so a defence that faced a QB who left after 8
+attempts is credited with those yards. Result: beta 0.402 to 0.075, residual
+SD 70.0 to 72.6 as the left tail was restored, join rate 95.0 to 96.7 percent.
+
+**3.4 The `targets_roll >= 3` training gate in receiving and receptions. THE
+HIGHEST-VALUE REMAINING FIX.** `load_model` trains on `targets_roll >= 3`
+while `project_week` serves at 1.5. Same population mismatch that erased two
+betas, now sitting in the one market that has signal.
+
+Handle this more carefully than the previous two. Both modules already have
+honest evaluation populations (no volume filter in `build_dataset`, confirmed
+at 22,540 rows each), so **only the training gate moves**. Receptions is the
+only market worth anything, so a careless change could destroy the single real
+finding. Run the harness before and after and keep the change only if beta
+holds or improves.
+
+Also in the same pass: `actual_result` in both modules reads `build_dataset()`
+and returns `None` on a null stat. nflverse appears to store 0.0 rather than
+null for active WR/TE/RB rows, so the practical impact is small, but matching
+the rushing and anytime_td pattern removes the possibility.
+
+**3.5 The qb_rushing label bug, plus its grading bug.** `MARKET_MAP` in
+`import_lines` has no `qb_rushing` key, so QB rushing props store as
+`market = 'rushing'`. The `is_qb_model` flag routes the edge calculation
+correctly in memory but never reaches the database. **The API data has the same
+issue**, since `player_rush_yds` contains both. Solve it once at analysis time
+by splitting on position from nflverse after the join, rather than at fetch
+time.
+
+Second, independent cause of the same symptom: `qb_rushing.actual_result`
+returns `None` when `rushing_yards` is null, where zero is correct for an
+active QB. Both must be fixed or the market still never grades.
+
+Payoff: unlocks the market with the highest correlation in the project (0.510,
+essentially unbiased) which has **never graded a single row**, and recovers
+about 40 percent of rushing's join rate.
+
+**3.6 Name normalisation, and consolidate the two normalizers.** Specific gaps
+identified from the join diagnostic: parenthetical team tags
+(`Trey McBride (Ari)`, `Lamar Jackson (BAL)`, `Michael Thomas (NO)`,
+`Michael (Saints) Thomas`), initial forms (`A. Trautman`, `J. Hill`,
+`M. Jones Jr.`), nickname aliases (`Joshua Palmer`, `Cameron Ward`,
+`Hollywood Brown`), and dotted variants (`C.J. Uzomah`, `CJ Stroud`).
+`db._norm_name` is scalar and `data_utils.norm_join_name` is vectorised and
+they apply different rules; one should call the other so they cannot drift.
+
+Worth 1 to 2 points of join rate across three markets, and join rate is now
+the primary survivorship tell, so it is worth more than it looks.
+
+**3.7 WR receptions bias +0.30 (z +5.39) on 1,456 rows.** The largest measured
+effect in the project and still unfixed, in the one market with signal. At a
+4.5 line with sigma about 2.49 that is roughly 0.12 sigma, overstating P(over)
+by about 5 points. High-volume receptions is worse at +0.32 (z +3.15).
+
+**3.8 RB receiving as a yards-per-target problem.** RB receptions bias is
+-0.16 while RB receiving yards is +3.86 (z +3.59). At about 7 yards a catch
+the reception shortfall predicts -1 yard, so the entire error lives in ypt,
+not volume. Fix the RB ypt feature, not the RB level.
+
+**3.9 Audit every remaining `build_dataset` for the four-place bug pattern.**
+Three instances found so far by reading six files. `anytime_td` and
+`qb_rushing` are the two not yet re-verified against the pattern end to end.
+
+---
+
+## PHASE 4: FIX THE PRICING LAYER
+
+**4.1 Median-calibrated alpha.** One parameter, and it removes a 3.6 to 4.1
+point structural lean from every gamma prop before the model says anything.
+Choose alpha so the priced P(over) at zero deviation matches the measured over
+rate, rather than reading it off the regression's mean offset.
+`edge_threshold.zero_dev_check` already reports the gap to target. Receptions
+needs no change: its negative binomial is exact to 0.1 of a point.
+
+**4.2 Keep sigma level-dependent, move the anchor.** The shipped
+`a * proj^b` shape is right (fitted exponents 0.54 to 0.57 for receiving
+against a shipped 0.6172, 0.48 to 0.53 for rushing against 0.7149). What
+changes is that the spread should be measured around the **blended mean**
+rather than the model's own projection, because the shipped version includes
+the projection error. Note that qb_passing cannot support a power law at all
+(every QB projects into a narrow 180 to 300 band, so the fit is unidentified
+and must fall back to flat).
+
+**4.3 Sigma as a function of level AND deviation.** The over-dispersion
+finding. Sigma currently depends on the projection level only, but the
+conditional variance almost certainly also rises with
+`|projection - line|`, because large disagreements happen when something
+unusual is going on: injuries, role changes, weather. Rows with large `|dev|`
+get distributions that are too narrow, and those rows populate the top and
+bottom calibration bands where the gaps are +7.3 and -11.6 points.
+
+**4.4 Price off the blended mean, with MARKET-SPECIFIC beta.**
+`line + alpha + beta * (projection - line)` as the distribution mean. Pooled
+0.172 would display phantom edges in three markets. At the measured values,
+rushing and qb_passing should show nothing and receiving almost nothing.
+
+**4.5 Shrink for the winner's curse, or stop conditioning on the side.**
+Side selection costs about 4.3 points of win probability, which exceeds the
+vig. Two routes: shrink the displayed probability toward 0.5 by the measured
+curse, or display both sides with their own probabilities and let the user see
+that neither clears. The second is more honest and fits the product vision
+better.
+
+**4.6 Then, and only then, recompute the edge threshold.** The infrastructure
+exists. It currently says no threshold clears on four seasons.
+
+---
+
+## PHASE 5: NEW MODELING
+
+**5.1 The line-as-feature model. This is now the main strategic lever.**
 
 ```
 actual = alpha + gamma*line + beta*(projection - line) + sum(delta_i * feature_i)
@@ -439,169 +429,190 @@ actual = alpha + gamma*line + beta*(projection - line) + sum(delta_i * feature_i
 
 Any feature with delta significantly nonzero is information the market missed,
 **by construction**. No longer competing with the market's information, only
-searching for the residual it omits. Strictly more informative than the scalar
-beta, because it says *where* the signal is.
+searching for the residual it omits. Strictly more informative than a scalar
+beta because it says WHERE the signal is.
 
-Must be a **second-stage model** trained only on rows with captured lines,
-because the existing modules train on 2022-2024 where no line data exists.
-Rule of thumb: 50 to 100 rows per feature. Three seasons supports 15+ features.
+Why this moved to the top: `--fixed-train` proved more data does not help and
+the in-sample gap proved there is no overfitting, so the binding constraint is
+which features carry information the market misses. A scalar beta of 0.275 in
+receptions says "27 percent of the deviation is real, always", which is almost
+certainly wrong in an interesting way. Delta tells the informative features
+from the already-priced ones.
 
-**4.4** Feature snapshotting. (old item 13)
-`bets` stores `projection` and `line` but not `target_share_roll`, `snap_roll`
-and the rest. Either snapshot features at import or reconstruct them from
-`build_dataset` at analysis time (deterministic given the data, so both work).
-4.3 needs this.
+Must be a second-stage model trained only on rows with captured lines, since
+the existing modules train on 2022-2024 where no line data exists. Rule of
+thumb 50 to 100 rows per feature; four seasons supports 15 or more. Fit AFTER
+Phase 3 so the features being tested are the honest versions.
 
-**4.5** Variance model for low-integer markets. (old item 11)
-Structural insight worth acting on: FanDuel charges flat -113 both sides on
-yardage, which asserts P(over) is about 0.5 for every yardage prop and adjusts
-the **line** to make it true. If the line sits at the median, knowing the
-variance buys nothing.
+**5.2 Feature snapshotting.** `bets` stores `projection` and `line` but not
+`target_share_roll`, `snap_roll` and the rest. Either snapshot features at
+import or reconstruct them from `build_dataset` at analysis time. 5.1 needs
+this.
 
-That breaks down when the line **cannot** sit at the median. Receptions lines
-are 2.5, 3.5, 4.5. QB rushing lines are 0.5 to 5.5. Increments are coarse
-relative to the distribution, so true P(over) is genuinely 0.42 or 0.58.
-FanDuel already knows this: receptions is the one market where they use
-per-player odds (breakeven 0.417 to 0.610) instead of flat vig. The question is
-whether they price it well.
+**5.3 Variance model for low-integer markets.** FanDuel charges flat -113 both
+sides on yardage, which asserts P(over) is about 0.5 for every yardage prop
+and adjusts the LINE to make it true. If the line sits at the median, knowing
+the variance buys nothing.
 
-Current sigma is a function of the projection alone, so a 10-target slot
-receiver and a 4-target deep threat projected at the same yardage get identical
-spreads. Model player-specific variance from target depth, target share and
-role volatility.
+That breaks down when the line CANNOT sit at the median. Receptions lines are
+2.5, 3.5, 4.5; QB rushing lines are 0.5 to 5.5. Increments are coarse relative
+to the distribution, so true P(over) is genuinely 0.42 or 0.58. FanDuel
+already knows this: receptions is the one market where they use per-player
+odds (breakeven 0.417 to 0.610) instead of flat vig. The question is whether
+they price it well.
 
-**Testable offline right now** on four seasons of outcomes with no lines at
-all: fit a variance model, check whether residual spread is predictable from
-pre-game features.
+This is now more attractive than it was, because receptions is the only market
+with signal and the only one where the distributional route is open. Current
+sigma is a function of the projection alone, so a 10-target slot receiver and
+a 4-target deep threat projected at the same yardage get identical spreads.
+**Testable offline on four seasons of outcomes with no lines at all.**
 
-**4.6** Receptions movement in odds space. (old item 2)
-254 of 273 reception props showed a flat line. FanDuel moves reception prices
-through the **odds**, not the line, so Line Movement measures the wrong
-quantity for that market and has been blind to its price action. Compute
-reception movement in implied probability, the way the TD section does.
+**5.4 Multi-book consensus and disagreement as a display.** Comes free in
+credit terms. Instead of model-versus-FanDuel, show per-book lines, consensus
+(median, robust to one stale book), and disagreement (spread between books).
+Disagreement fires on some props and stays quiet on others, which is the
+behaviour originally wanted from the edge column. Requirements: consensus only
+where 2 or more books have a line; match each book's nearest capture within an
+hour or two and flag when it cannot; `PRIMARY_BOOK = "fanduel"` so existing
+behaviour is unchanged by default; record which book a bet was placed at in
+`bets` so shopping value becomes measurable.
 
-**4.7** Injury and inactive filter at import, plus the large-move warning.
-(old item 14)
-nflverse publishes injury reports. Kills stale rows like Bowers and removes a
-whole class of fake edge. The large-move warning matters because the biggest
-line moves are usually news the model cannot see. Also the operational edge:
-a starter ruled out at 11am Sunday with a backup's line that has not moved is
-a real prop edge, and it is about speed rather than modelling.
+**5.5 Line shopping as a first-class product.** The highest-confidence edge
+available and it requires no forecasting skill. Worth 1.7 to 3.2 points of win
+probability on 2025's 8-book data, which is 3 to 6 percent of turnover. Note
+it adds NO forecast value (the best-line beta was mostly artifact), so it is
+purely a price improvement. Restrict to books you actually hold accounts with,
+because `best` across all books includes stale and limited prices.
 
-**4.8** Receiving alpha.
-Receiving outcomes landed **+5.40 yards above the line** on average across two
-weeks, independent of anything the model said. Receptions alpha is +0.06 by
-contrast. If this survives three seasons, a blind over on receiving beats the
-model. Now directly testable rather than a two-week curiosity.
+**5.6 Receptions movement in odds space.** 254 of 273 reception props showed a
+flat line because FanDuel moves reception prices through the ODDS. Line
+Movement measures the wrong quantity for that market and has been blind to its
+price action. Compute reception movement in implied probability, the way the
+TD section does. More important now that receptions is the one real market.
 
-**4.9** Tier cutoffs.
-Distribution check and results check, re-bucketable from stored edges. Note the
-two pricing regimes: pre-Sep-9 rows used the old normal pricing with
-double-counted vig, but projection and line are both stored so edges are
-recomputable.
+**5.7 Injury and inactive filter at import, plus the large-move warning.**
+nflverse publishes injury reports. Kills stale rows and removes a whole class
+of fake edge. The large-move warning matters because the biggest line moves
+are usually news the model cannot see. Also the operational edge: a starter
+ruled out at 11am Sunday with a backup's line that has not moved is a real
+prop edge, and it is about speed rather than modeling.
 
----
-
-## PHASE 5: Fix the pricing layer
-
-**5.1** Price off the blended mean. (old item 1)
-In `mc_pricing`, use `line + beta*(projection - line)` as the distribution mean
-instead of the projection, with beta configurable and **defaulting to the
-measured value**. At beta = 0 every edge collapses to the vig-only baseline,
-which is the honest current state. One parameter carries the entire question.
-
-With three seasons of data, beta can be **market-specific** rather than pooled,
-which 596 rows could not support.
-
-**5.2** Refit sigma around the blended mean.
-The current sigma was fitted as spread of actuals around the model's own
-projection, so it includes the projection error. Around a blended mean the
-correct spread is different, and the harness reports it directly as the
-regression residual SD.
-
-**5.3** Apply alpha per market.
-The mean-versus-median offset, estimated from real lines rather than guessed.
-This is the rigorous version of the "gamma is over-skewed" hypothesis that the
-Week 1 data appeared to support and Week 2 dissolved.
+**5.8 Tier cutoffs.** Re-bucketable from stored edges. Note two pricing
+regimes: pre-Sep-9 rows used the old normal pricing with double-counted vig,
+but projection and line are both stored so edges are recomputable.
 
 ---
 
-## PHASE 6: Structural cleanup
+## PHASE 6: STRUCTURAL CLEANUP
 
-**6.1** Consolidate the two name normalizers. (old item 15)
-`db._norm_name` is scalar, `data_utils.norm_join_name` is vectorised, and they
-apply different rules. One should call the other so the rules cannot drift.
-
-**6.2** Move `_all_player_stats` into `data_utils`. (old item 16)
-Currently duplicated in `rushing.py` and `anytime_td.py`, and the same pattern
-is needed for the Phase 3 fixes in other modules.
-
+**6.1** Consolidate the two name normalizers (folded into 3.6).
+**6.2** Move `_all_player_stats` into `data_utils`. Now duplicated in
+`rushing.py`, `anytime_td.py` and `qb_passing.py`, and the same pattern is
+needed for the remaining Phase 3 fixes.
 **6.3** Verify the TSV export column order matches the tracker workbook.
-
 **6.4** UTC to Eastern for import stamps, display-time conversion only.
+**6.5** Pin pandas, and clean the two bare-integer timedelta deprecations at
+`live_capture.py:224` and `fill_weeks.py:194`. Cosmetic today, but the Actions
+runner installs fresh pandas every run, so a version bump turns a warning into
+a scheduled job that fails silently at 3am.
+**6.6** Add `models/__init__.py` (folded into J4).
+**6.7** Make `odds_backfill.py` stop on the first 401 rather than grinding
+through 24, and rename its "Supabase password" prompt to "app password".
 
 ---
 
-## PHASE 7: Long horizon
+## PHASE 7: LONG HORIZON
 
-**7.1** Copula or Monte Carlo for correlated props. (old item 18)
-This is where Monte Carlo genuinely becomes necessary. A same-game parlay of
-Mahomes over passing and Kelce over receiving is not the product of two
-independent probabilities, because both depend on the same game script, and
-there is no closed form for the joint distribution.
+**7.1 NHL, shots on goal.** Deliberately deferred until the NFL work is
+settled. The season opens in early October, so re-running the NHL section of
+`odds_api_check.py` once a game is inside 48 hours becomes possible then, and
+costs nothing if it returns nothing (Phase 0 returned zero books on all six
+prop keys in September, which is probably just "props not posted a week out").
 
-Commercially interesting because SGP pricing is where books are **weakest**:
-correlation modelling is hard and they apply crude haircuts. A soft corner of
-the market that hobby limits can attack. Gate this on a demonstrated
-single-prop edge existing first.
+Shots on goal chosen over points and goals for the same reasons receptions
+outperforms anytime TD here: event counts are high enough that the outcome is
+not luck-dominated (3 to 4 shots a game, mean 2 to 3.5); assists are the least
+projectable component of any hockey stat; shots are a role and usage statistic
+(ice time, power play deployment, shot rate per minute) which is stable and
+autocorrelated, exactly what the EWMA work exploits; and lines sit at 1.5,
+2.5, 3.5, a coarse integer grid where the line cannot sit at the median, which
+is precisely the 5.3 condition. The negative binomial work from receptions
+transfers directly, and receptions is the one market that works here.
 
-**7.2** Play-by-play engine. (old item 19)
-Simulating drive by drive and aggregating naturally produces correlated
-outcomes, game-script effects, and the garbage-time and blowout dynamics a
-marginal model cannot represent. The only item on this list that could produce
-genuinely **differentiated** projections rather than better-fitted versions of
+Open question before committing: shots on goal counts only shots reaching the
+net, not blocked or missed attempts. Check the quality of the free hockey data
+ecosystem against nflverse first. A good line dataset with poor stat data is
+only half useful.
+
+**7.2 Copula or Monte Carlo for correlated props.** This is where Monte Carlo
+genuinely becomes necessary. A same-game parlay of Mahomes over passing and
+Kelce over receiving is not the product of two independent probabilities.
+Commercially interesting because SGP pricing is where books are weakest:
+correlation modeling is hard and they apply crude haircuts. Gate this on a
+demonstrated single-prop edge existing first, which it does not yet.
+
+**7.3 Play-by-play engine.** Simulating drive by drive naturally produces
+correlated outcomes, game-script effects, and garbage-time dynamics a marginal
+model cannot represent. The only item on this list that could produce
+genuinely DIFFERENTIATED projections rather than better-fitted versions of
 public data. Offseason.
 
-**7.3** Re-run `td_reversion_check.py` at Week 5 and Week 8.
-The +0.031 TD movement effect is the only surviving positive finding. If it
-holds and the direction count turns positive with more rows, it becomes worth
-pursuing.
+**7.4 Re-run `td_reversion_check.py` at Week 5 and Week 8.** The +0.031
+anytime TD movement effect is a lead, not an edge. Direction-only count is
+null at 0.472, so the effect may be about move SIZE rather than direction.
 
-**7.4** Traffic dashboard, Patreon or free-tier distribution.
+**7.5 Traffic dashboard, Patreon or free-tier distribution.** Not before J2
+(RLS) and not before there is something worth distributing.
 
 ---
 
-## The honest risk
+## THE HONEST RISK, RESTATED
 
-If beta comes back near zero across three seasons **after** every Phase 3 fix,
-that is a definitive answer: these projections do not beat sharp NFL prop
-lines, and further feature engineering on public nflverse data will not change
-it. Better to learn that in a week for $59 than across two seasons of manual
-transcription.
+The September version of this document said: if beta comes back near zero
+across three seasons after every Phase 3 fix, that is a definitive answer.
 
-It would not kill the project. It would redirect it at the things that do not
-require beating the market's mean:
+**For rushing and qb_passing, that has now happened.** Beta -0.032 and 0.075,
+after the fixes, on four seasons. Those two markets do not beat sharp NFL prop
+lines and further feature engineering on public nflverse data will not change
+it. Receiving at 0.093 is on the same path.
 
-- **Line shopping** across books (4.1, 4.2), the highest-confidence edge
+Receptions survived at 0.275 with t +9.45, and it still does not clear a 6
+percent hold on the holdout. So the risk did not fully materialise, but it
+came close, and the project is now one market rather than four.
+
+That does not kill it. It redirects it at the things that do not require
+beating the market's mean:
+
+- **Line shopping** (5.4, 5.5), the highest-confidence edge, worth 3 to 6
+  percent of turnover and requiring no forecasting skill at all
 - **Distributional edge** where line increments are too coarse to sit at the
-  median (4.5)
-- **Correlated props** where books price correlation crudely (7.1)
-- **Speed on news** where a line has not moved yet (4.7)
+  median (5.3), which is exactly where receptions lives
+- **Correlated props** where books price correlation crudely (7.2)
+- **Speed on news** where a line has not moved yet (5.7)
+- **The line-as-feature model** (5.1), the one route to finding information
+  the market misses rather than re-fitting what it already has
 
-All four are supported by the data purchase.
+All five are supported by the data already purchased.
 
 ---
 
-## One cost worth acknowledging
+## ONE COST WORTH ACKNOWLEDGING
 
-The "proprietary historical line dataset that compounds in value" framing takes
-a hit. A version of it is purchasable for $59. The 6,807 existing snapshots are
-still FanDuel-specific and timestamped to a personal capture schedule, but they
-are not a moat.
+The "proprietary historical line dataset that compounds in value" framing took
+a hit when a version of it turned out to be purchasable for $59. The 6,807
+original snapshots are FanDuel-specific and timestamped to a personal capture
+schedule, so they are not a moat.
 
-That is a good trade anyway. The moat only mattered if the model worked, and
-the data is what tells you whether it can.
+That was a good trade anyway. The moat only mattered if the model worked, and
+the data is what told us that three of four models do not. Learning that in a
+day for $59 beats two seasons of manual transcription reaching the same
+conclusion.
 
-Also worth noting: the screenshot-to-CSV transcription workflow can be retired
-once the API ingest works. No batching, no `UNCERTAIN` flags, no cumulative
-team tracker, no 20-image sessions.
+The screenshot-to-CSV transcription workflow is retired. No batching, no
+`UNCERTAIN` flags, no cumulative team tracker, no 20-image sessions.
+
+What did turn out to be the asset is the **measurement apparatus**: a harness
+that fits nothing on the rows it scores, placebos every claim, inspects the
+composition of its own winning bets, and has now caught four survivorship
+artifacts including two that presented as t-statistics above +6. That is
+harder to buy for $59.
