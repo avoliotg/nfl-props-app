@@ -148,10 +148,31 @@ Summarised here; the handoff carries the numbers and confidence intervals.
 ## JUMP THE QUEUE
 
 **J0. Fire the GitHub Actions capture workflow.** Time-sensitive and still not
-done. `.github/workflows/capture-lines.yml` is written. Commit it, add the
-five repo secrets, fire it manually before trusting the cron. Opening lines
-are the only perishable thing in this plan: historical data is not going
-anywhere, but Thursday's pre-movement numbers will be gone permanently.
+done. `.github/workflows/capture-lines.yml` is committed at the correct path.
+Add the five repo secrets (`ODDS_API_KEY`, `SUPABASE_URL`, `SUPABASE_KEY`,
+`OPAL_EMAIL`, `OPAL_PASSWORD`) and fire it manually from the Actions tab
+before trusting the cron. Confirm the job goes green AND that a new
+`captured_at` appears for the current week; a green run that wrote nothing is
+the failure mode to watch for.
+
+Two reasons this is the highest-priority operational item, not one:
+
+1. Opening lines are perishable. Historical data is not going anywhere, but
+   Thursday's pre-movement numbers will be gone permanently.
+2. **The pre-kickoff runs are how 2026 becomes a usable season.** The Sunday
+   12:23pm, 3:23pm and 7:23pm ET captures land 30 to 60 minutes before
+   kickoff, which is the same window as the 354,554 historical closing rows.
+   Fire every week and 2026 arrives on the same instrument for free. Miss them
+   and this season is a gap that cannot be filled retroactively on a small
+   tier. See 1.8.
+
+Observed posting behaviour, from three captures on Tuesday September 22: 1,408
+rows at 8:39am ET, 1,480 at 10:53am (nothing moved), 1,784 at 3:27pm as
+yardage began filling in and a game that had returned nothing at all started
+posting. **Tuesday afternoon is when the books begin.** This is also why the
+schedule is clock-driven rather than coverage-driven: a coverage trigger would
+have looked at the two flat morning snapshots and concluded nothing was
+happening.
 
 **J1. Do not bet on displayed edges as probabilities.** Now supported by
 measurement rather than by a calibration curiosity. 65.3 percent of props show
@@ -206,27 +227,54 @@ Five NFL market keys cover all six app markets because `player_rush_yds`
 contains both RB and QB rushing: `player_pass_yds`, `player_rush_yds`,
 `player_reception_yds`, `player_receptions`, `player_anytime_td`.
 
-**Credits remaining: approximately 56,700, expiring mid-October.**
+**Credits remaining: approximately 56,691.** Credits are a MONTHLY ALLOCATION,
+not a balance, so whatever is unspent at the renewal date does not carry
+forward.
 
-**1.6 The outstanding decision: 2026 as a complete season.** Credits are a
-monthly allocation and do not survive cancellation. A full 2026 closing
-backfill cannot be done now because the games have not been played. Getting
-2026 on the same instrument as 2023 through 2025 means one more month of
-subscription in February. Cheap, but decide deliberately rather than
-discovering it in January.
+**1.6 The subscription continues at a lower tier. It is not cancelled.** The
+$59 / 100,000 tier was sized for the one-off historical backfill, which is
+complete. Ongoing live capture is a fraction of that, so the plan is to
+DOWNGRADE at the renewal date rather than cancel.
 
-**1.7 Budget for the remaining window:**
+This matters more than it sounds, because it changes three things the earlier
+version of this plan treated as constrained.
+
+**1.7 Ongoing capture budget.** A full NFL slate is about 80 credits, and the
+Actions schedule is roughly 47 runs a week:
 
 | item | credits |
 |---|---|
-| live capture through mid-October, 47 runs a week | ~15,000 |
-| NHL historical, two past seasons at 10 credits a game | ~26,000 |
-| reserve | ~15,000 |
+| one full slate | ~80 |
+| 47 runs a week | ~3,800 |
+| **per month, in season** | **~16,000** |
 
-**1.8 Cancel a few days before the renewal date**, not as soon as the backfill
-verified. Cancelling ends the dense capture window, and the free tier supports
-only about one NFL capture a week. Disable or thin the Actions workflow in the
-same sitting or it will blow through the free 500 credits a month.
+So the target tier needs a monthly allocation comfortably above 20,000 to
+carry the current cadence plus the Sunday density. **Check the lesser tier's
+allocation against 16,000 before downgrading**, and spend anything worth
+pulling on the big tier first, since the remaining 56,691 does not survive the
+renewal.
+
+Out of season the same schedule costs almost nothing, because empty responses
+are not charged and there are no games to enumerate.
+
+**1.8 2026 as a complete season: no longer an outstanding decision.** The
+earlier version said this needed one extra month of subscription in February,
+because a closing backfill of unplayed games is impossible. On a continuously
+paid tier that constraint disappears two ways. The historical endpoints stay
+available, so 2026 can be backfilled whenever convenient. Better still, the
+**live captures at 30 to 60 minutes before kickoff ARE the closing snapshots**,
+so 2026 builds itself as the season goes, provided the pre-kickoff runs
+actually happen.
+
+**That makes the Actions workflow considerably more valuable than "catching
+perishable openers". It is how this season becomes measurable against the
+354,554 historical rows.** If the Sunday 12:23pm, 3:23pm and 7:23pm ET runs
+fire every week, 2026 arrives on the same instrument as 2023 through 2025 at
+no extra cost. If they do not, this season is a gap in the dataset that cannot
+be filled retroactively on the free tier.
+
+Do NOT disable the workflow at the downgrade. Confirm the new tier covers
+~16,000 a month and leave it running.
 
 **1.9 The known backfill defect, documented and NOT worth fixing.** The
 closing timestamp was computed as placeholder kickoff minus 45 minutes using
@@ -528,6 +576,19 @@ settled. The season opens in early October, so re-running the NHL section of
 `odds_api_check.py` once a game is inside 48 hours becomes possible then, and
 costs nothing if it returns nothing (Phase 0 returned zero books on all six
 prop keys in September, which is probably just "props not posted a week out").
+
+**NHL is no longer competing for a fixed, expiring credit pool.** The earlier
+version of this plan reserved about 26,000 credits for two historical seasons
+of shots on goal against an allocation that expired in mid-October, which made
+it a race. On a continuously paid tier (see 1.6) it becomes a scheduling
+question: the historical endpoints stay available, so two seasons of NHL can
+be pulled in any month where the allocation has room after NFL capture. That
+removes the only reason to rush it ahead of the NFL work.
+
+Note the volume asymmetry. NHL is expensive not because of the credit formula,
+which is sport-agnostic, but because it has 1,312 regular season games against
+the NFL's 272. One market at 10 credits per game historically is about 13,000
+per season.
 
 Shots on goal chosen over points and goals for the same reasons receptions
 outperforms anytime TD here: event counts are high enough that the outcome is
