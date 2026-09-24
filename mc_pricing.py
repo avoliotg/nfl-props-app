@@ -57,7 +57,8 @@ import numpy as np
 from scipy import stats
 
 __all__ = ["p_over", "p_under", "edge", "breakeven_from_odds",
-           "american_to_prob", "sigma_for", "PARAMS", "price"]
+           "american_to_prob", "sigma_for", "PARAMS", "price",
+           "BLEND", "blended_mean", "has_model_signal"]
 
 
 # ----------------------------------------------------------------------------
@@ -100,6 +101,142 @@ PARAMS = {
 PI_CAP = 0.35          # never claim more than a 35% chance of a blank
 SIGMA_MIN = 0.05
 MARKETS = tuple(PARAMS)
+
+
+# ----------------------------------------------------------------------------
+# BLEND  (Phase 4.4, added September 24 2026)
+# ----------------------------------------------------------------------------
+#
+# WHAT CHANGED AND WHY
+#     This module used to be handed the model's RAW PROJECTION as the
+#     distribution mean. Measured against 2023-2026 closing lines, that was
+#     the single largest defect in the pricing layer: the bottom calibration
+#     band ran 14 to 20 points too low and the top band 17 to 32 points too
+#     high, in EVERY market. That tilt is mean error. It cannot be a sigma
+#     problem, because dP(over)/dsigma is negative in every band and both
+#     families, so a sigma change moves every band the SAME direction and
+#     can never move the two ends in opposite directions.
+#
+#     Pricing the blended mean instead collapses the tilt:
+#
+#       market       worst band, raw proj   worst band, blend
+#       receptions          +21.1                  +2.4
+#       receiving           -18.4                  -3.8
+#       rushing             +31.7                  -1.5
+#       qb_passing          -20.6                  -5.3
+#
+#     Sigma is UNCHANGED. A flat residual-SD sigma and a sqrt(k*mean) sigma
+#     were both tested against the blend and both were WORSE than the PARAMS
+#     forms above (receiving went -3.8 to -20.2 on flat). The sub-proportional
+#     PARAMS forms scale with the player; a single scalar does not. Do not
+#     "fix" sigma without re-running blend_sigma_grid.py first.
+#
+# BETA IS CLIPPED TO ZERO unless its game-clustered CI excludes zero.
+#     Only receptions survives that test (beta 0.226, SE 0.035, t +6.5).
+#     receiving 0.066 (SE 0.044), rushing -0.043 (SE 0.048) and qb_passing
+#     0.085 (SE 0.067) all include zero, so the projection does NOT enter
+#     their price. Shipping a negative beta would price AWAY from the
+#     projection, and shipping an insignificant one would display phantom
+#     edges in three markets that carry no signal. The harness's own
+#     out-of-sample procedure already clips rushing to 0.000.
+#
+# ALPHA IS THE DIRECT MEASUREMENT AT ZERO DEVIATION, not a regression
+#     intercept. Once beta is clipped to zero, the intercept of a free-slope
+#     fit is the wrong parameter: it carries a correction for a slope the
+#     model no longer has. Rushing shows the gap plainly, intercept +3.46
+#     against direct +4.01.
+#
+#     Alpha is the mean-versus-median offset. Outcomes are right-skewed and
+#     the line sits near the median, so the MEAN sits above it. Dropping
+#     alpha was tested and is much worse: it prices the mean at the line,
+#     understates P(over) everywhere, and put 7,858 of 7,861 receiving props
+#     into the top tier. Alpha is what stops that.
+#
+# qb_passing ALPHA IS ZERO BECAUSE IT IS UNRESOLVABLE, not because it is
+#     absent. Direct alpha is +0.55 with an SE of 2.55, per-season +1.37,
+#     +4.68, -3.94. Sigma there is about 73 yards, so a few yards of skew is
+#     one fortieth of a standard deviation and 1,670 rows cannot pin it.
+#     Pricing at the line is honest; shipping +2.37 as though it were known
+#     is not.
+#
+# qb_rushing IS ZERO FOR A DIFFERENT REASON: no data. MARKET_MAP in
+#     import_lines has no qb_rushing key, so those props store as
+#     market='rushing'. Zero rows have ever graded. That is a data gap, not
+#     a finding. Revisit when plan item 3.5 lands.
+#
+# WHAT WAS TESTED AND FOUND FLAT
+#     Both parameters were cut by player caliber (target-share quartile,
+#     position, exact line value), by game context (home/away, favourite/
+#     underdog, game total, roof, weekday, divisional, rest days) and by
+#     line source. Every cut came back consistent against a Bonferroni
+#     threshold. So a single pair per market is defensible. Note the power
+#     limit honestly: minimum detectable spread in beta ran 0.10 to 0.42
+#     depending on the cut, so "flat" means "no difference large enough to
+#     see at this n", not "identical".
+#
+#     Alpha is NOT flat across seasons for receptions (direct p=0.026,
+#     2023 +0.369 against 2024 +0.054 and 2025 +0.081). If this is ever
+#     improved, recency weighting is the lever, not a caliber table.
+#
+# THE ANCHOR MATTERS AND WAS VERIFIED
+#     Beta is highly sensitive to which line you anchor on: across min,
+#     median, FanDuel and max it spans 0.24 to 0.37, which is 7 to 10 SEs.
+#     min and max are order statistics over eight books, so anchoring on
+#     them inflates beta mechanically, the same artifact family as line_best
+#     and BetRivers. FanDuel and consensus agree (0.226 vs 0.275, z -1.07)
+#     and those are the only two real anchors.
+#
+#     The app prices a HAND-TYPED line, so the constants only hold if what
+#     gets typed is FanDuel's line. Checked against the capture: reception
+#     lines match at 92.4 percent of comparable props. The yardage markets
+#     match at 44 to 47 percent, which is line movement between capture and
+#     entry on a fine grid, and it does not matter there because beta is
+#     zero so the projection never enters the price.
+#
+BLEND = {
+    "receptions": dict(alpha=0.1491, beta=0.2261),
+    "receiving":  dict(alpha=3.4623, beta=0.0),
+    "rushing":    dict(alpha=4.0067, beta=0.0),
+    "qb_passing": dict(alpha=0.0,    beta=0.0),
+    "qb_rushing": dict(alpha=0.0,    beta=0.0),
+}
+
+
+def has_model_signal(market):
+    """True when the projection enters the price for this market.
+
+    False means the market is REFERENCE ONLY: show the projection beside the
+    line, price a probability, but do NOT display an edge or a tier. A market
+    with beta clipped to zero makes no player-specific claim, so an edge
+    column there is a verdict the evidence does not support. This is plan
+    item J1 in code rather than in a document.
+    """
+    return bool(BLEND.get(market, {}).get("beta", 0.0) != 0.0)
+
+
+def blended_mean(market, proj, line):
+    """line + alpha + beta * (projection - line). None if unusable.
+
+    This is the distribution mean. Pass the result to p_over, not the raw
+    projection.
+
+    Markets absent from BLEND fall back to the raw projection rather than
+    silently pricing at the line, so a new market added to PARAMS without a
+    BLEND entry behaves as it did before this change instead of quietly
+    losing its model.
+    """
+    try:
+        proj = float(proj)
+        line = float(line)
+    except (TypeError, ValueError):
+        return None
+    if not (np.isfinite(proj) and np.isfinite(line)):
+        return None
+    b = BLEND.get(market)
+    if b is None:
+        return proj
+    m = line + b["alpha"] + b["beta"] * (proj - line)
+    return float(m) if np.isfinite(m) else None
 
 
 # ----------------------------------------------------------------------------
@@ -387,6 +524,39 @@ def _self_test():
             ok = False
             print(f"  FAIL {args} raised {type(exc).__name__}")
     print("  all junk handled -> OK" if ok else "  see failures above")
+
+    print("\n[9] blend: mean must be line+alpha+beta*dev, and beta=0 must "
+          "ignore the projection")
+    for mk in ("receptions", "receiving", "rushing", "qb_passing"):
+        b = BLEND[mk]
+        ln = max(PARAMS[mk]["floor"] * 1.2, PARAMS[mk]["floor"] + 1)
+        hi = blended_mean(mk, ln * 3.0, ln)
+        lo = blended_mean(mk, ln * 0.2, ln)
+        want_hi = ln + b["alpha"] + b["beta"] * (ln * 3.0 - ln)
+        good = abs(hi - want_hi) < 1e-9
+        if b["beta"] == 0.0:
+            # with beta zero the projection must not move the mean at all
+            good &= abs(hi - lo) < 1e-12
+        ok &= good
+        print("  %-12s line %7.1f  proj high -> %8.3f  proj low -> %8.3f  "
+              "%s" % (mk, ln, hi, lo, "OK" if good else "FAIL"))
+
+    print("\n[10] has_model_signal: exactly one market should carry signal")
+    live = [mk for mk in BLEND if has_model_signal(mk)]
+    good = live == ["receptions"]
+    ok &= good
+    print("  markets with beta != 0: %s  %s"
+          % (live or "none", "OK" if good else "FAIL"))
+
+    print("\n[11] blend junk inputs never raise")
+    for args in (("receptions", None, 2.5), ("receptions", float("nan"), 2.5),
+                 ("receptions", 3.0, None), ("nosuchmarket", 3.0, 2.5)):
+        try:
+            blended_mean(*args)
+        except Exception as exc:
+            ok = False
+            print("  FAIL %s raised %s" % (args, type(exc).__name__))
+    print("  all junk handled -> OK")
 
     print("\n" + "=" * 72)
     print("ALL CHECKS PASSED" if ok else "SOME CHECKS FAILED")

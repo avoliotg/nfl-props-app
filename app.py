@@ -379,19 +379,45 @@ with tab_board:
                                        under_odds=r.get("under_odds"))
                     if res is None:
                         return pd.Series({"p_over": None, "edge": None,
-                                          "side": "", "tier": "", "approx": False})
+                                          "side": "", "tier": "", "approx": False,
+                                          "reference_only": False})
+                    # REFERENCE ONLY: beta is clipped to zero for this market,
+                    # so the projection does not enter the price and the model
+                    # makes no player-specific claim. Show the probability,
+                    # withhold the verdict. Plan item J1 in code.
+                    if res.get("reference_only"):
+                        return pd.Series({
+                            "p_over": res["p_over"], "edge": None,
+                            "side": "", "tier": "",
+                            "approx": res["approx_odds"],
+                            "reference_only": True})
                     best = res["best_edge"]
                     # both sides negative → it's a pass; side is moot
                     side = res["best_side"] if best >= 0 else "—"
                     return pd.Series({
                         "p_over": res["p_over"], "edge": best,
                         "side": side, "tier": mc.tier_for_edge(best),
-                        "approx": res["approx_odds"]})
+                        "approx": res["approx_odds"],
+                        "reference_only": False})
 
             mc_cols = graded.apply(_row_edge, axis=1)
             graded = pd.concat([graded, mc_cols], axis=1)
-            graded = graded[graded["edge"].notna()].copy()
-            graded = graded.sort_values("edge", ascending=False).reset_index(drop=True)
+
+            # Drop rows we could not price at all, but KEEP reference-only
+            # rows: those are priced fine, they just carry no edge. The old
+            # unconditional edge.notna() filter would have emptied the board
+            # for every market except receptions.
+            if "reference_only" not in graded.columns:
+                graded["reference_only"] = False
+            graded["reference_only"] = graded["reference_only"].fillna(False)
+            is_ref = graded["reference_only"].astype(bool)
+            graded = graded[graded["edge"].notna()
+                            | (is_ref & graded["p_over"].notna())].copy()
+            reference_only_market = bool(len(graded) > 0
+                                         and graded["reference_only"].all())
+            graded = graded.sort_values(
+                "p_over" if reference_only_market else "edge",
+                ascending=False).reset_index(drop=True)
 
             # format the import timestamp for display (compact, human-readable)
             graded["captured_display"] = pd.to_datetime(
@@ -410,19 +436,40 @@ with tab_board:
                     "player_display_name": "Player", "projection": "Proj",
                     "line": "Line", "p_over": "P(over)%", "edge": "Edge",
                     "side": "Side", "tier": "Tier", "captured_display": "Captured"})
-                cols = ["Player", "Proj", "Line", "P(over)%", "Edge", "Side", "Tier", "Captured"]
+                if reference_only_market:
+                    # no Edge, Side or Tier column at all. A blank column
+                    # invites the reader to wonder what is missing; an absent
+                    # one says the market does not make that claim.
+                    cols = ["Player", "Proj", "Line", "P(over)%", "Captured"]
+                else:
+                    cols = ["Player", "Proj", "Line", "P(over)%", "Edge",
+                            "Side", "Tier", "Captured"]
             aligns = ["left"] * len(cols)
 
             # summary stats (market-agnostic: edge/tier mean the same everywhere)
             n_lines = len(graded)
-            n_positive = int((graded["edge"] > 0).sum())
-            tier_counts = graded["tier"].value_counts()
-            n_max = int(tier_counts.get("Max", 0))
-            n_strong = int(tier_counts.get("Strong", 0))
-            n_lean = int(tier_counts.get("Lean", 0))
-            st.markdown(
-                f"**{n_lines}** lines entered · **{n_positive}** positive edges · "
-                f"{n_max} Max, {n_strong} Strong, {n_lean} Lean")
+            if reference_only_market:
+                st.markdown(
+                    f"**{n_lines}** lines entered · **reference only**, no edge "
+                    f"shown for this market")
+                st.info(
+                    "This market is shown for reference. Measured against "
+                    "2023-2026 closing lines, the model adds nothing to the "
+                    "line here: beta is statistically indistinguishable from "
+                    "zero, so the projection does not enter the price and no "
+                    "edge is claimed. The probability shown is the line plus a "
+                    "measured skew correction, priced through the market's "
+                    "own distribution. Receptions is currently the only market "
+                    "with measurable signal.")
+            else:
+                n_positive = int((graded["edge"] > 0).sum())
+                tier_counts = graded["tier"].value_counts()
+                n_max = int(tier_counts.get("Max", 0))
+                n_strong = int(tier_counts.get("Strong", 0))
+                n_lean = int(tier_counts.get("Lean", 0))
+                st.markdown(
+                    f"**{n_lines}** lines entered · **{n_positive}** positive edges · "
+                    f"{n_max} Max, {n_strong} Strong, {n_lean} Lean")
 
             st.markdown("### Your entered lines")
             if graded["approx"].any():
@@ -716,6 +763,7 @@ with tab_top:
 # ============ LINE MOVEMENT ============
 with tab_movement:
     st.subheader("📈 Line Movement")
+    st.write("whoami:", db.get_authed_client(st.session_state.user).rpc("whoami").execute())
     st.caption("Every captured snapshot for each player, across all markets. "
                "🟢 toward = the line moved toward the model's read (market agreeing). "
                "🔴 away = it moved against the model (be more skeptical). "

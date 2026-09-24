@@ -194,6 +194,67 @@ def _fetch_lines_rows(client, sport, season, week, market=None, ascending=True):
 
 # ---------- market + name normalisation ----------
 
+# BUG PATTERN 2 HELPERS  (September 24 2026)
+#
+# The 'lines' table holds one row per BOOK per snapshot, and it ALSO holds
+# hand-saved board rows written by the Save-to-Log path. Neither fact was true
+# when this module was written: the original capture was FanDuel only, so
+# counting rows was counting captures, and nothing else wrote to the table.
+#
+# Measured on 2026-09-24:
+#   43,465 rows, 8 books
+#   5,071 of them are hand-saved (book='fanduel' AND projection IS NOT NULL)
+#
+# There is no column marking a row as saved. The discriminator is that a
+# CAPTURED row has no projection and no edge, because the capture has no model
+# attached, while a SAVED row always carries both. That is an accident rather
+# than a design, so if a future writer starts populating projection on capture
+# these helpers break silently. Add an explicit source column if that ever
+# happens.
+#
+# RULE: any function reading 'lines' must exclude saved rows and select or
+# collapse on book before counting or differencing anything, and should carry
+# n_books so the defect cannot recur invisibly.
+
+DEFAULT_BOOK = "fanduel"
+
+
+def _drop_saved_rows(df):
+    """Keep only CAPTURED rows: no projection means it came from the API.
+
+    Saved rows carry their own captured_at spread across whenever the board
+    was saved, so they interleave with real captures and corrupt any first
+    vs latest comparison.
+    """
+    if df.empty or "projection" not in df.columns:
+        return df
+    return df[df["projection"].isna()].copy()
+
+
+def _select_book(df, book=DEFAULT_BOOK):
+    """Restrict to one book, and report coverage.
+
+    Returns (frame, n_books_seen, book_used).
+
+    FanDuel is the default because it is the app's pricing anchor: the BLEND
+    constants in mc_pricing were fitted on FanDuel closing lines, and FanDuel
+    came out second sharpest of eleven books with the tightest hold at 0.0608.
+
+    A MEDIAN across books is the right anchor for the research harness, where
+    it estimates truth. It is the wrong anchor here, because a median across
+    eight books is not a price any book offered, and settling or pricing
+    against one produced a +0.2991 result at t +3.83 that was pure artifact.
+    So this selects rather than averages, and a player with no FanDuel row
+    drops out instead of being given a synthetic number.
+    """
+    if df.empty or "book" not in df.columns:
+        return df, 0, None
+    n_books = int(df["book"].nunique())
+    sub = df[df["book"] == book]
+    if sub.empty:
+        return sub, n_books, None
+    return sub.copy(), n_books, book
+
 # Map various CSV market names -> the app's internal market keys
 MARKET_MAP = {
     "receiving_yards": "receiving",
@@ -460,13 +521,28 @@ def import_lines(rows, season, week, user, sport="NFL"):
 
 # ---------- reads ----------
 
-def get_lines(season, week, market, user, sport="NFL"):
+def get_lines(season, week, market, user, sport="NFL", book=DEFAULT_BOOK):
     """Fetch the pool of imported lines for a given market/week as a dict
     {player_norm: {'line':..., 'over_odds':..., 'under_odds':..., 'captured_at':...}}.
 
-    Returns the MOST RECENT snapshot per player: rows come back oldest first and
-    later writes overwrite earlier ones. That only holds if every row is read,
-    which is why this pages past the 1000-row cap.
+    Returns the most recent CAPTURED snapshot per player FROM ONE BOOK.
+
+    FIXED September 24 2026. This used to filter on sport, season, week and
+    market only, then overwrite a dict as rows came back oldest-first. With an
+    eight-book capture that meant the prefilled line was whichever book
+    happened to write last at the latest captured_at, which is arbitrary, and
+    it also included hand-saved board rows. This function feeds the editable
+    Line column, so an arbitrary book's line was what got priced.
+
+    Symptom that found it: typed reception lines matched a captured FanDuel
+    line on 92.4 percent of comparable props, but typed receiving, rushing and
+    passing lines matched on only 44 to 47 percent. Reception lines are coarse
+    enough that books agree, so an arbitrary book is usually FanDuel's number
+    anyway; yardage lines differ between books by a yard or more routinely.
+
+    The book matters because beta is highly sensitive to the anchor: across
+    min, median, FanDuel and max it spans 0.24 to 0.37, which is 7 to 10
+    standard errors. The mc_pricing.BLEND constants are fitted on FanDuel.
     """
     client = get_authed_client(user)
     degraded = auth_degraded()
@@ -480,24 +556,70 @@ def get_lines(season, week, market, user, sport="NFL"):
         _warn(f"No lines returned for {market} wk{week}, and the session is "
               f"degraded: {degraded}. This is probably auth, not missing data.")
 
+    if not rows:
+        return {}
+
+    df = pd.DataFrame(rows)
+    df = _drop_saved_rows(df)
+    sub, n_books, book_used = _select_book(df, book)
+
+    if sub.empty and n_books > 0:
+        # the book we want is not in this week's capture. Say so rather than
+        # silently falling back to another book's numbers, because the pricing
+        # constants are anchored on this one.
+        _warn(f"No {book} rows for {market} wk{week} "
+              f"({n_books} other book(s) present). Prefill left blank; enter "
+              f"lines by hand and note that they are not {book}.")
+        return {}
+
+    if "captured_at" in sub.columns:
+        sub = sub.sort_values("captured_at")
+
     out = {}
-    for r in rows:
+    for r in sub.to_dict("records"):
         out[_norm_name(r["player"])] = {"line": r.get("line"),
                                         "over_odds": r.get("over_odds"),
                                         "under_odds": r.get("under_odds"),
-                                        "captured_at": r.get("captured_at")}
+                                        "captured_at": r.get("captured_at"),
+                                        "book": r.get("book"),
+                                        "n_books": n_books}
     return out
 
 
-def get_line_movement(season, week, market, user, sport="NFL"):
+def get_line_movement(season, week, market, user, sport="NFL",
+                      book=DEFAULT_BOOK):
     """For a market/week, return a DataFrame with one row per player who has
-    2+ captured snapshots: first vs. latest line/projection/edge, the movement
-    between them, the latest tier, and whether the line moved TOWARD or AWAY
-    from the model's read. TD (odds-only, no line) compares IMPLIED PROBABILITY
-    instead of raw odds, since odds aren't linear. Players with only 1
-    snapshot are excluded (nothing to compare yet). Also carries the RAW
-    latest line/odds (not just display values) so a save-to-log action can
-    use them directly.
+    2+ captured snapshots FROM ONE BOOK: first vs. latest line/projection/edge,
+    the movement between them, the latest tier, and whether the line moved
+    TOWARD or AWAY from the model's read. TD (odds-only, no line) compares
+    IMPLIED PROBABILITY instead of raw odds, since odds aren't linear. Players
+    with only 1 snapshot are excluded (nothing to compare yet). Also carries
+    the RAW latest line/odds (not just display values) so a save-to-log action
+    can use them directly.
+
+    FIXED September 24 2026, two independent contaminations:
+
+    1. BOOK. 'lines' holds one row per book per snapshot, and this function
+       treated every ROW as a snapshot. With an eight-book capture the counts
+       ran about 8x high (Matthew Golden showed 55 "Line Captures" against 8
+       real captured_at values), the sparkline was eight books interleaved at
+       each timestamp rather than a time series, and first-row to last-row
+       differencing meant Move and toward_away measured BOOK SPREAD rather
+       than movement over time. Within one captured_at the book order is
+       arbitrary, so the sign of Move was arbitrary too.
+
+    2. HAND-SAVED ROWS. The Save-to-Log path writes into this same table,
+       5,071 rows as of today, all labelled book='fanduel'. They carry their
+       own captured_at spread across whenever a board was saved, so they
+       interleaved with real captures. Excluded via projection IS NULL.
+
+       Both defects predate the current capture and were silent: the original
+       capture was FanDuel only and nothing else wrote to the table, so
+       counting rows WAS counting captures.
+
+    These are columns bets have been chosen from. n_books is now returned as
+    an explicit column so the same defect cannot recur invisibly, which is the
+    reason eval_harness could never hide it.
     """
     from models import anytime_td
     import mc
@@ -519,6 +641,19 @@ def get_line_movement(season, week, market, user, sport="NFL"):
         return pd.DataFrame()
 
     df = pd.DataFrame(rows)
+
+    n_saved = 0
+    if "projection" in df.columns:
+        n_saved = int(df["projection"].notna().sum())
+    df = _drop_saved_rows(df)
+    df, n_books, book_used = _select_book(df, book)
+
+    if df.empty:
+        _warn(f"No captured {book} rows for {market} wk{week} "
+              f"({n_books} book(s) in the capture, {n_saved} hand-saved rows "
+              f"excluded). Nothing to compare.")
+        return pd.DataFrame()
+
     df["player_norm"] = df["player"].apply(_norm_name)
     is_td = (market == "anytime_td")
 
@@ -580,6 +715,7 @@ def get_line_movement(season, week, market, user, sport="NFL"):
                 "raw_projection": last.get("projection"),
                 "p_over": None,
                 "series": td_series,
+                "n_books": n_books, "book": book_used,
             })
         else:
             first_side = _side(first)
@@ -601,6 +737,7 @@ def get_line_movement(season, week, market, user, sport="NFL"):
                 "raw_projection": last.get("projection"),
                 "p_over": compute_p_over(market, last.get("projection"), last.get("line")),
                 "series": line_series,
+                "n_books": n_books, "book": book_used,
             })
     return pd.DataFrame(out)
 

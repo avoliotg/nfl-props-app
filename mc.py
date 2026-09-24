@@ -1,7 +1,20 @@
 """
-Monte Carlo humility layer — converts a point projection into P(over line)
-and an edge-vs-vig, with a season-stage uncertainty multiplier.
-Market-agnostic: the sigma rule per market is the only market-specific input.
+Pricing layer: converts a point projection into P(over line) and an
+edge-vs-vig.
+
+September 24 2026, Phase 4.4. This layer now prices the BLENDED mean,
+line + alpha + beta*(projection - line), rather than the raw projection.
+Beta is clipped to zero in every market whose game-clustered CI includes
+zero, which is all of them except receptions. See mc_pricing.BLEND for the
+parameters, the evidence, and what was tested and found flat.
+
+Markets with beta clipped to zero are REFERENCE ONLY. edge_calc returns
+reference_only=True for them and call sites must blank the edge, side and
+tier columns. The probability is still honest; the edge is not.
+
+Sigma is unchanged and should stay that way unless blend_sigma_grid.py says
+otherwise. Both a flat residual SD and a sqrt(k*mean) form were tested
+against the blend and both were worse than the PARAMS forms.
 """
 from scipy.stats import norm
 
@@ -51,8 +64,34 @@ def stage_multiplier(games_played):
 
 
 def prob_over(market, projection, line, games_played):
-    """P(actual > line) via a normal curve, sigma inflated by season stage.
-    Returns probability 0-1, or None if uncomputable."""
+    """P(actual > line), pricing the BLENDED mean, not the raw projection.
+
+    Phase 4.4, September 24 2026. The mean is
+    line + alpha + beta*(projection - line), with beta clipped to zero in
+    every market whose game-clustered CI includes zero. See mc_pricing.BLEND
+    for the parameters and the evidence behind them.
+
+    This changed the distribution mean for every market. It did NOT change
+    sigma: the PARAMS sigma forms were re-tested against the blend and beat
+    both a flat residual SD and a sqrt(k*mean) form.
+
+    Returns probability 0-1, or None if uncomputable.
+    """
+    mult = stage_multiplier(games_played) if USE_STAGE_MULTIPLIER else 1.0
+    mean = mc_pricing.blended_mean(market, projection, line)
+    if mean is None:
+        return None
+    return mc_pricing.p_over(market, mean, line, stage_mult=mult)
+
+
+def prob_over_raw(market, projection, line, games_played):
+    """The PRE-4.4 behaviour: price the raw projection. Kept for comparison
+    and rollback. Not used by the app.
+
+    If you are tempted to call this in production, the reason not to is that
+    it puts the bottom calibration band 14 to 20 points too low and the top
+    band 17 to 32 points too high in every market.
+    """
     mult = stage_multiplier(games_played) if USE_STAGE_MULTIPLIER else 1.0
     return mc_pricing.p_over(market, projection, line, stage_mult=mult)
 
@@ -111,6 +150,14 @@ def edge_calc(market, projection, line, games_played,
     else:
         best_side, best_edge = "UNDER", edge_u
 
+    # REFERENCE ONLY markets: beta clipped to zero, so the projection does
+    # not enter the price and the model makes no player-specific claim. The
+    # probability is still meaningful (it is the line plus a measured skew
+    # correction, priced through the right distribution) but an EDGE there is
+    # a verdict the evidence does not support. Call sites must blank edge,
+    # side and tier when this is True. Plan item J1.
+    reference_only = not mc_pricing.has_model_signal(market)
+
     return {
         "p_over": round(p_o * 100, 1),
         "p_under": round(p_u * 100, 1),
@@ -119,6 +166,8 @@ def edge_calc(market, projection, line, games_played,
         "best_side": best_side,
         "best_edge": round(best_edge, 1),
         "approx_odds": approx,
+        "reference_only": reference_only,
+        "blended_mean": mc_pricing.blended_mean(market, projection, line),
     }
 
 
