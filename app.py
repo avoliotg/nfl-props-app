@@ -763,7 +763,6 @@ with tab_top:
 # ============ LINE MOVEMENT ============
 with tab_movement:
     st.subheader("📈 Line Movement")
-    st.write("whoami:", db.get_authed_client(st.session_state.user).rpc("whoami").execute())
     st.caption("Every captured snapshot for each player, across all markets. "
                "🟢 toward = the line moved toward the model's read (market agreeing). "
                "🔴 away = it moved against the model (be more skeptical). "
@@ -895,7 +894,7 @@ with tab_movement:
                 "over_odds": savable["raw_over_odds"],
                 "under_odds": savable["raw_under_odds"],
                 "edge": savable["latest_edge"],
-                "p_over": None,
+                "p_over": savable["p_over"] if not is_td else None,
                 "side": savable["latest_side"] if not is_td else "",
                 "tier": savable["latest_tier"],
                 "bet": savable["player"].map(lambda p: bool(bet_flags.get(p, False))),

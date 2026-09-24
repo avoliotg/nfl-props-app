@@ -1,0 +1,75 @@
+def holdout(s, weeks_by_season, quiet=False):
+    """Choose the threshold on other seasons, then spend it on the held out one.
+
+    This is the only honest estimate of what a threshold rule would have
+    earned, because the choice of threshold never sees the season it is
+    evaluated on.
+    """
+    if not quiet:
+        print("\n" + "=" * 96)
+        print("HOLDOUT: threshold chosen on other seasons, "
+              "evaluated on the held out one")
+        print("=" * 96)
+    seasons = sorted(s["season"].unique())
+    if len(seasons) < 2:
+        print("  needs at least two seasons")
+        return
+    print(f"  {'held out':>9}{'chosen t':>10}{'bets':>7}{'per wk':>8}"
+          f"{'win rate':>10}{'ROI':>9}{'SE':>8}{'t':>7}")
+    rows = []
+    for s_out in seasons:
+        tr = s[s["season"] != s_out]
+        te = s[s["season"] == s_out]
+        bt, bv = None, -np.inf
+        for t in GRID:
+            g = tr[(tr["edge"] >= t) & (~tr["push"])]
+            if len(g) < 100:
+                continue
+            v = float(g["profit"].mean())
+            if v > bv:
+                bt, bv = t, v
+        if bt is None:
+            continue
+        g = te[(te["edge"] >= bt) & (~te["push"])]
+        cm = (eh.cluster_mean(g["profit"].to_numpy(), g["event_id"].to_numpy())
+              if len(g) >= 20 else None)
+        if cm is None:
+            print(f"  {int(s_out):>9}{bt:>10.3f}{len(g):>7}"
+                  f"   too few bets for a clustered SE")
+            continue
+        wr = float(g["won"].mean())
+        tstat = cm["mean"] / cm["se"] if cm and cm["se"] > 0 else np.nan
+        wk = max(weeks_by_season.get(s_out, 1), 1)
+        flag = "  <- AT GRID MAX, search truncated" if bt >= GRID[-1] else ""
+        print(f"  {int(s_out):>9}{bt:>10.3f}{len(g):>7}{len(g) / wk:>8.1f}"
+              f"{wr:>10.4f}{cm['mean']:>+9.4f}{cm['se']:>8.4f}{tstat:>+7.2f}"
+              f"{flag}")
+        rows.append((s_out, bt, len(g), cm["mean"], g))
+    if rows and not quiet:
+        allg = pd.concat([r[4] for r in rows], ignore_index=True)
+        cm = eh.cluster_mean(allg["profit"].to_numpy(),
+                             allg["event_id"].to_numpy())
+        tstat = cm["mean"] / cm["se"] if cm["se"] > 0 else np.nan
+        print(f"  {'POOLED':>9}{'':>10}{len(allg):>7}{'':>8}"
+              f"{allg['won'].mean():>10.4f}{cm['mean']:>+9.4f}"
+              f"{cm['se']:>8.4f}{tstat:>+7.2f}")
+        print("\n    A pooled holdout ROI whose CI excludes zero is the first "
+              "honest evidence of")
+        print("    a profitable rule in this project. A CI spanning zero means "
+              "the threshold is")
+        print("    not yet established and the app should stay silent.")
+    elif rows:
+        allg = pd.concat([r[4] for r in rows], ignore_index=True)
+        cm = eh.cluster_mean(allg["profit"].to_numpy(),
+                             allg["event_id"].to_numpy())
+        if cm is not None:
+            t = cm["mean"] / cm["se"] if cm["se"] > 0 else np.nan
+            print(f"  {'POOLED':>9}{'':>10}{len(allg):>7}{'':>8}"
+                  f"{allg['won'].mean():>10.4f}{cm['mean']:>+9.4f}"
+                  f"{cm['se']:>8.4f}{t:>+7.2f}")
+
+
+# ------------------------------------------------------------ stratum filter
+
+def add_quartiles(j):
+    """Line-level and player-frequency quartiles, computed WITHIN market.
