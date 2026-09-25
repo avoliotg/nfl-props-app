@@ -7,3 +7,7 @@ data/bet_log.csv
 lines_cache.parquet
 probe_rushing*.py
 backfill_ledger.json
+
+# analysis artifacts, not source
+*.csv
+gate_*.json

@@ -1,11 +1,72 @@
 """
-QB Rushing Yards market module — self-contained engine.
+QB Rushing Yards market module - self-contained engine.
 Separate from rushing.py because QB rushing behaves fundamentally differently
 from RB rushing (carries mix kneels/sneaks/scrambles, not homogeneous RB carries).
 Validated 2025 OOS: corr 0.51 (best of all markets), 2-feature model.
-Projects ALL QBs with valid rolling data — pocket passers included, since their
+Projects ALL QBs with valid rolling data - pocket passers included, since their
 low-rushing lines are just as bettable (and just as easy for the model to call
 correctly) as scramblers' high-rushing lines.
+
+SEPTEMBER 24 2026: three changes, one of which is the point and two of which
+are hygiene. All three came out of plan item 3.5, which made this market
+measurable for the first time by deriving the qb_rushing label at analysis
+time (data_utils.split_qb_rushing) rather than trying to import it.
+
+  1. THE ONE THAT MATTERS: load_model's training window is now a PARAMETER.
+
+     It hardcoded `season <= 2024`, which is verbatim the defect rushing.py's
+     docstring note 5 was fixed for. A single fit pinned to 2024 cannot be
+     scored leave-season-out, because scoring 2023 and 2024 would use a model
+     trained on them. Leave-season-out is the discipline that makes every
+     number in this project trustworthy, so this blocked an honest
+     measurement of the market entirely. Signature now matches rushing.py's
+     so the two cannot drift apart.
+
+  2. MEASURED NO-OP, ADDED ANYWAY: fillna(0) on carries and rushing_yards
+     before the rolling features.
+
+     rushing.py does this on the reasoning that a player with a stat row was
+     ACTIVE, so a missing rushing line is a genuine zero rather than absent
+     data. Measured by qb_null_check.py on all 2,817 QB rows: ZERO nulls in
+     either column, byte-identical model coefficients, and zero movement in
+     the served projection. nflverse stores 0.0 for active QBs, same as it
+     does for receptions.
+
+     So this is a latent defect with no current effect, and it is recorded as
+     a no-op rather than as a fix that moved something. It is here to remove
+     the possibility if nflverse's storage convention ever changes.
+
+     Note what it does NOT fix: 112 training rows (5.47 percent) still drop
+     on a null FEATURE. Those are each QB's debut game, where shift(1) has
+     nothing to shift. project_week drops the same rows, so the training
+     population already matches the served population and that gap is
+     correct rather than survivorship.
+
+  3. actual_result WAS THE GRADING BUG IN PLAN ITEM 3.5.
+
+     Three defects, all of which rushing.py had already fixed:
+       - it returned None where a null stat means a genuine zero
+       - it had no normalised-name fallback, so "Mitch Trubisky" against
+         nflverse's "Mitchell Trubisky" never graded
+       - it read build_dataset(), which is cached for the board and drops
+         nothing on a null feature, so a debut game could not grade
+
+     It now reads unfiltered stats and THEN filters to QB. That ordering is
+     deliberate and is not what rushing.py does. name_resolve.py measured 21
+     normalized names in nflverse that map to more than one player, and
+     `anthony brown` is one of them: a CB with 11 rows and a QB with 2. An
+     unfiltered name match can therefore return two rows and iloc[0] picks
+     arbitrarily, which grades a bet against the wrong player. Filtering to
+     QB removes that whole class here, and a collision guard catches whatever
+     is left.
+
+     OPEN, NOT FIXED HERE: rushing.py, receiving.py, receptions.py,
+     qb_passing.py and anytime_td.py all take iloc[0] on an unfiltered name
+     match and are exposed to the same 21 collisions. The worst case is
+     `michael carter`, a CB with 51 rows against an RB with 47, which is
+     close to a coin flip on a genuinely bettable player. That needs one
+     shared helper rather than five copies of this guard, and it is blocking
+     for plan item 5.2 (paper trading) but harmless while the app is silent.
 """
 import numpy as np
 import pandas as pd
@@ -17,13 +78,28 @@ from sklearn.linear_model import LinearRegression
 SEASONS = [2022, 2023, 2024, 2025, 2026]
 LEAN_FEATS = ["rush_yds_roll", "carries_roll"]
 
+# Last season included in training by default. Parameterised so eval_harness
+# can score walk-forward instead of always training through 2024. Same name
+# and same default as rushing.DEFAULT_TRAIN_MAX_SEASON, deliberately, so the
+# two modules cannot drift apart.
+DEFAULT_TRAIN_MAX_SEASON = 2024
+
 GAP_ANCHORS = [(0, 0.49), (3, 0.55), (7, 0.61), (15, 0.68), (30, 0.70)]
 
 
 @st.cache_data(show_spinner="Pulling & preparing NFL data (first run only)...")
 def build_dataset():
     ps = data_utils.load_player_stats(SEASONS)
+    ps = ps.to_pandas() if hasattr(ps, "to_pandas") else ps
     qb = ps[ps["position"] == "QB"].copy()
+
+    # A QB with a stat row was active, so no carries means zero carries and
+    # zero yards rather than unknown. Measured as a no-op on all 2,817 rows
+    # (qb_null_check.py, September 24): nflverse already stores 0.0. Kept to
+    # remove the possibility, not because it changed anything.
+    qb["carries"] = qb["carries"].fillna(0)
+    qb["rushing_yards"] = qb["rushing_yards"].fillna(0.0)
+
     qb = qb.sort_values(["player_id", "season", "week"]).reset_index(drop=True)
 
     for col in ["rushing_yards", "carries"]:
@@ -45,11 +121,27 @@ def build_dataset():
 
 
 @st.cache_resource(show_spinner="Training model...")
-def load_model():
+def load_model(train_max_season=DEFAULT_TRAIN_MAX_SEASON):
+    """Fit the two-feature model, with the training window as a parameter.
+
+    train_max_season exists so eval_harness can score this market
+    leave-season-out. Calling it with the default and then scoring 2023 or
+    2024 measures a model trained on those rows, which is in-sample and
+    biased upward. Any harness use must pass the held-out season's
+    predecessor explicitly.
+
+    No volume gate, by design: the module projects all QBs with valid rolling
+    data, so unlike rushing.py there is no threshold that could drift between
+    the training and serving populations. The only rows excluded are those
+    with a null FEATURE, which are debut games, and project_week excludes
+    exactly the same ones.
+    """
     qb = build_dataset()
-    train = qb[qb["season"] <= 2024].dropna(subset=LEAN_FEATS + ["rushing_yards"])
+    train = qb[qb["season"] <= train_max_season].dropna(
+        subset=LEAN_FEATS + ["rushing_yards"])
     model = LinearRegression().fit(train[LEAN_FEATS], train["rushing_yards"])
     return model, LEAN_FEATS
+
 
 def available_seasons():
     return SEASONS
@@ -145,16 +237,41 @@ def player_history(season, player_name):
 
 
 def actual_result(season, week, player_name):
-    """Actual rushing yards for grading. Returns the number, or None."""
-    df = build_dataset()
-    m = df[(df["season"] == season) & (df["week"] == week) &
-           (df["player_display_name"] == player_name)]
-    if len(m) == 0:
-        return None
-    val = m.iloc[0]["rushing_yards"]
-    return None if pd.isna(val) else float(val)
+    """Actual rushing yards for grading. Returns the number, or None.
+
+    Now delegates to data_utils.actual_stat rather than carrying its own
+    copy of the logic. The earlier version in this file was correct, but it
+    was the SIXTH implementation of the same three rules plus a guard, and
+    five copies of a guard is the "import, do not restate" failure that
+    produced this project's two worst errors. One implementation, six
+    callers.
+
+    position="QB" is retained and still matters: it makes the `anthony brown`
+    collision (a CB with 11 rows against a QB with 2) unreachable rather
+    than merely guarded.
+
+    Behaviour is unchanged from the September 24 version: exact name match,
+    then a normalised fallback for spellings like "Mitch Trubisky" against
+    nflverse's "Mitchell Trubisky", 0.0 rather than None when an active QB
+    has a null rushing line, and None rather than a guess when a name
+    resolves to more than one player.
+    """
+    return data_utils.actual_stat(season, week, player_name, "rushing_yards",
+                                  seasons=SEASONS, position="QB")
 
 
+# PERFORMANCE, September 25. No cache decorator existed here, and
+# project_week calls this unconditionally on every call. Streamlit re-runs
+# the script on each widget interaction, so every dropdown click re-read
+# rosters, depth charts AND schedules from scratch. app.py renders the
+# rushing board from both rushing.project_week and qb_rushing.project_week,
+# so that board paid for two assemblers.
+#
+# TTL rather than a plain cache, deliberately: depth charts are the LIVE
+# data, and a permanent cache would serve a stale QB1 after a starter is
+# ruled out. This module is the most exposed to that of the six, because it
+# selects on pos_rank == 1 at the latest snapshot.
+@st.cache_data(ttl=1800, show_spinner=False)
 def build_upcoming_week(season, week):
     """Manufacture QB player-week rows for a game not yet played (e.g. Week 1),
     bridging rushing yards and carries from the prior season."""

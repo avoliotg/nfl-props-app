@@ -1,6 +1,14 @@
 import streamlit as st
 import pandas as pd
 import betlog
+# PERFORMANCE, September 25. Streamlit re-runs this whole file on every
+# widget interaction, and every Supabase read used to repeat. Two of them
+# sat inside per-market LOOPS, so one widget change cost up to twelve
+# network round trips. app_cache wraps those reads with a TTL plus a
+# version token that writes bump, so re-runs are free and a write still
+# invalidates. See app_cache.py for the measurements.
+import app_cache
+from models import data_utils
 import db
 import mc
 
@@ -246,7 +254,8 @@ with tab_board:
                               help="NFL season to view.")
     with c2:
         weeks = module.available_weeks(season)
-        week = st.selectbox("Week", weeks, index=len(weeks) - 1,
+        week = st.selectbox("Week", weeks,
+                            index=data_utils.default_week_index(weeks, season),
                             help="Week within the season. Weeks 19+ are playoffs.")
 
     board = module.project_week(season, week)
@@ -275,7 +284,8 @@ with tab_board:
 
         board = board.copy()
         # pre-fill inputs from the imported lines pool (if any)
-        pool = db.get_lines(season, week, market_key, st.session_state.user)
+        pool = app_cache.get_lines(season, week, market_key,
+                                   st.session_state.user)
 
         def _prefill_field(player_name, field):
             entry = pool.get(db._norm_name(player_name))
@@ -771,7 +781,9 @@ with tab_movement:
     lm_season = st.selectbox("Season", module.available_seasons(),
                              index=len(module.available_seasons()) - 1, key="lm_season")
     lm_weeks = module.available_weeks(lm_season)
-    lm_week = st.selectbox("Week", lm_weeks, index=len(lm_weeks) - 1, key="lm_week")
+    lm_week = st.selectbox("Week", lm_weeks,
+                           index=data_utils.default_week_index(lm_weeks, lm_season),
+                           key="lm_week")
 
     TIER_EMOJI = {"Pass": "⚪ Pass", "Lean": "🟡 Lean",
                   "Strong": "🟢 Strong", "Max": "🔥 Max"}
@@ -800,7 +812,8 @@ with tab_movement:
 
     for mkt_key, mkt_label in MARKETS.items():
         st.markdown(f"#### {mkt_key}")
-        mv = db.get_line_movement(lm_season, lm_week, mkt_label, st.session_state.user)
+        mv = app_cache.get_line_movement(lm_season, lm_week, mkt_label,
+                                         st.session_state.user)
 
         if len(mv) == 0:
             st.caption(f"No {mkt_key} players with 2+ snapshots yet.")
@@ -852,6 +865,20 @@ with tab_movement:
         })
         for numcol in ["Proj", "Edge", f"First {line_word}", f"Latest {line_word}", "Move"]:
             grid[numcol] = pd.to_numeric(grid[numcol], errors="coerce").astype("float64")
+
+        # Drop the MODEL columns when this market has nothing to put in
+        # them. Captured rows carry a line and no projection, and a market
+        # whose beta is clipped to zero is reference-only by design (plan
+        # item J1), so Tier, vs. Model, Proj, Edge and Side rendered as a
+        # wall of "None" and "—". An empty column reads as a broken value
+        # rather than an absent one. Any column with a real value is kept.
+        for _c in ["Tier", "vs. Model", "Proj", "Edge", "Side"]:
+            if _c not in grid.columns:
+                continue
+            _vals = grid[_c].dropna()
+            if len(_vals) == 0 or set(_vals.astype(str)) <= {"—", "", "None",
+                                                             "nan"}:
+                grid = grid.drop(columns=[_c])
 
         edited = st.data_editor(
             grid, width='stretch', hide_index=True,
@@ -1167,6 +1194,9 @@ if IS_ADMIN:
                         st.warning("No data rows found (need a header row + at least one line).")
                     else:
                         result = db.import_lines(rows, imp_season, imp_week, st.session_state.user)
+                        # the lines table just changed, so every cached
+                        # read of it must miss on the next rerun
+                        app_cache.bump()
                         st.session_state["import_result"] = {
                             "imported": result["imported"],
                             "season": imp_season, "week": imp_week,
@@ -1192,7 +1222,9 @@ if IS_ADMIN:
                                     index=len(x_seasons) - 1, key="x_season")
         with xc2:
             x_weeks = receiving.available_weeks(x_season)
-            x_week = st.selectbox("Week", x_weeks, index=len(x_weeks) - 1,
+            x_week = st.selectbox("Week", x_weeks,
+                                  index=data_utils.default_week_index(
+                                      x_weeks, x_season),
                                   key="x_week")
 
         games = game_export.load_games(x_season, x_week)
@@ -1219,8 +1251,8 @@ if IS_ADMIN:
             frames, notes = {}, []
             for mkt_name in x_markets:
                 mkt_key = MARKETS[mkt_name]
-                mv = db.get_line_movement(x_season, x_week, mkt_key,
-                                          st.session_state.user)
+                mv = app_cache.get_line_movement(x_season, x_week, mkt_key,
+                                                 st.session_state.user)
                 if len(mv) == 0:
                     notes.append(f"{mkt_name}: no snapshots yet")
                     continue

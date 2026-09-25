@@ -220,6 +220,21 @@ def project_week(season, week, min_carries=MIN_CARRIES_ROLL):
     return wk[cols].sort_values("projection", ascending=False).reset_index(drop=True)
 
 
+# PERFORMANCE, September 25. This function had NO cache decorator in any of
+# the six market modules, and project_week calls it unconditionally on every
+# call. Streamlit re-runs the whole script on each widget interaction, so
+# every dropdown click re-read rosters and schedules (and depth charts, for
+# the QB markets) from scratch, per market. app.py renders the rushing board
+# from BOTH rushing.project_week and qb_rushing.project_week, so that board
+# paid for two full assemblers.
+#
+# TTL RATHER THAN A PLAIN CACHE, DELIBERATELY. What this loads is the LIVE
+# data: rosters and depth charts change mid-week when a starter is ruled out,
+# and a permanent cache would serve a stale QB1 for the rest of the week.
+# Thirty minutes keeps the board responsive while still picking up news
+# within one refresh cycle. Lower it if that feels too slow to react; the
+# cost of a miss is one rebuild.
+@st.cache_data(ttl=1800, show_spinner=False)
 def build_upcoming_week(season, week):
     """Manufacture player-week rows for a game not yet played (e.g. Week 1),
     bridging carries from the prior season. Fallback when build_dataset()
@@ -318,6 +333,9 @@ def player_history(season, player_name, min_carries=0.5):
     return out.sort_values("week").reset_index(drop=True)
 
 
+# NOW UNUSED. actual_result delegates to data_utils.actual_stat, which keeps
+# its own cached frame with the collision guard attached. Left rather than
+# deleted in case an external caller exists; nothing in this module uses it.
 @st.cache_data(show_spinner=False)
 def _all_player_stats():
     """Unfiltered player stats for grading.
@@ -333,22 +351,36 @@ def _all_player_stats():
 
 
 def actual_result(season, week, player_name):
-    """Actual rushing yards for grading. Returns the number, or None."""
-    ps = _all_player_stats()
-    m = ps[(ps["season"] == season) & (ps["week"] == week) &
-           (ps["player_display_name"] == player_name)]
-    if len(m) == 0:
-        # fall back to normalised matching: FanDuel and nflverse spell names
-        # differently ("Chris Rodriguez Jr." vs "Chris Rodriguez").
-        # norm_join_name is vectorised, so it needs a Series on both sides.
-        wk = ps[(ps["season"] == season) & (ps["week"] == week)].copy()
-        if len(wk):
-            target = data_utils.norm_join_name(pd.Series([player_name])).iloc[0]
-            wk["_norm"] = data_utils.norm_join_name(wk["player_display_name"])
-            m = wk[wk["_norm"] == target]
-    if len(m) == 0:
-        return None
-    val = m.iloc[0]["rushing_yards"]
-    # a player with a stat row was active, so a missing rushing line is a
-    # genuine zero, not an absence of data
-    return 0.0 if pd.isna(val) else float(val)
+    """Actual rushing yards for grading. Returns the number, or None.
+
+    Delegates to data_utils.actual_stat. This function already read unfiltered
+    stats, already had the normalised fallback, and already treated a null
+    stat on an active player as a genuine zero. What it lacked was the
+    collision guard: name_resolve.py measured 21 normalized names in nflverse
+    mapping to more than one player_id, and the WORST of them lands squarely
+    in this market.
+
+        michael carter   CB with 51 rows   against   RB with 47 rows
+
+    Michael Carter the running back carries real rushing props. In any week
+    both played, iloc[0] returned whichever row pandas happened to order
+    first, so a bet could be graded against a cornerback's rushing yards.
+    Close to a coin flip on a bettable player, and silent.
+
+    POSITION LIST, AND WHY IT IS NOT JUST ["RB"].
+
+    Since plan item 3.5, market = 'rushing' is the population AFTER
+    quarterbacks are split out to qb_rushing, but it is still genuinely
+    mixed: the harness's unjoined list for this market is led by Taysom Hill
+    (35), Deebo Samuel (31), Xavier Worthy (26), Puka Nacua (18) and Jameson
+    Williams (17), all receivers or hybrids taking carries. Filtering to RB
+    alone would refuse to grade every one of them.
+
+    So the list covers the offensive groups that take carries and excludes
+    defensive backs, which is exactly what makes the michael carter collision
+    unreachable while leaving the receivers gradeable. QB is deliberately
+    absent: those rows belong to qb_rushing now.
+    """
+    return data_utils.actual_stat(season, week, player_name, "rushing_yards",
+                                  seasons=SEASONS,
+                                  position=["RB", "WR", "TE", "FB"])

@@ -256,6 +256,21 @@ def project_week(season, week, min_attempts=MIN_ATTEMPTS_ROLL):
     return wk[cols].sort_values("projection", ascending=False).reset_index(drop=True)
 
 
+# PERFORMANCE, September 25. This function had NO cache decorator in any of
+# the six market modules, and project_week calls it unconditionally on every
+# call. Streamlit re-runs the whole script on each widget interaction, so
+# every dropdown click re-read rosters and schedules (and depth charts, for
+# the QB markets) from scratch, per market. app.py renders the rushing board
+# from BOTH rushing.project_week and qb_rushing.project_week, so that board
+# paid for two full assemblers.
+#
+# TTL RATHER THAN A PLAIN CACHE, DELIBERATELY. What this loads is the LIVE
+# data: rosters and depth charts change mid-week when a starter is ruled out,
+# and a permanent cache would serve a stale QB1 for the rest of the week.
+# Thirty minutes keeps the board responsive while still picking up news
+# within one refresh cycle. Lower it if that feels too slow to react; the
+# cost of a miss is one rebuild.
+@st.cache_data(ttl=1800, show_spinner=False)
 def build_upcoming_week(season, week):
     """Manufacture QB player-week rows for a game not yet played (e.g. Week 1),
     bridging attempts and opponent pass-defense from the prior season.
@@ -374,6 +389,10 @@ def player_history(season, player_name, min_attempts=0.5):
     return out.sort_values("week").reset_index(drop=True)
 
 
+# NOW UNUSED. actual_result delegates to data_utils.actual_stat, which keeps
+# its own cached frame. Left in place rather than deleted because it is a
+# public-looking helper that something else may call, but nothing in this
+# module does. Delete it once grep confirms no external caller.
 @st.cache_data(show_spinner=False)
 def _all_player_stats():
     """Unfiltered player stats for grading.
@@ -390,21 +409,20 @@ def _all_player_stats():
 
 
 def actual_result(season, week, player_name):
-    """Actual passing yards for grading. Returns the number, or None."""
-    ps = _all_player_stats()
-    m = ps[(ps["season"] == season) & (ps["week"] == week) &
-           (ps["player_display_name"] == player_name)]
-    if len(m) == 0:
-        # normalised fallback: FanDuel and nflverse spell names differently.
-        # norm_join_name is vectorised, so both sides need a Series.
-        wk = ps[(ps["season"] == season) & (ps["week"] == week)].copy()
-        if len(wk):
-            target = data_utils.norm_join_name(pd.Series([player_name])).iloc[0]
-            wk["_norm"] = data_utils.norm_join_name(wk["player_display_name"])
-            m = wk[wk["_norm"] == target]
-    if len(m) == 0:
-        return None  # no stat row at all, so the player was inactive
-    val = m.iloc[0]["passing_yards"]
-    # a QB with a stat row was active, so a missing passing line is a genuine
-    # zero, not an absence of data
-    return 0.0 if pd.isna(val) else float(val)
+    """Actual passing yards for grading. Returns the number, or None.
+
+    Delegates to the shared helper. This function was already the best of the
+    five: it read unfiltered stats, had the normalised fallback, and treated a
+    null stat on an active player as a real zero. One thing it lacked:
+
+      name_resolve.py measured 21 normalized names in nflverse mapping to more
+      than one player_id, and `anthony brown` is one of them, a CB with 11
+      rows against a QB with 2. Reading unfiltered and then taking iloc[0]
+      could therefore grade a quarterback's passing yards against a
+      cornerback's row.
+
+    position="QB" makes that whole class unreachable here rather than merely
+    guarded, and the guard still catches anything else.
+    """
+    return data_utils.actual_stat(season, week, player_name, "passing_yards",
+                                  seasons=SEASONS, position="QB")

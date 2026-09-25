@@ -115,6 +115,21 @@ def project_week(season, week, min_touches=1.5):
     return wk[cols].sort_values("projection", ascending=False).reset_index(drop=True)
 
 
+# PERFORMANCE, September 25. This function had NO cache decorator in any of
+# the six market modules, and project_week calls it unconditionally on every
+# call. Streamlit re-runs the whole script on each widget interaction, so
+# every dropdown click re-read rosters and schedules (and depth charts, for
+# the QB markets) from scratch, per market. app.py renders the rushing board
+# from BOTH rushing.project_week and qb_rushing.project_week, so that board
+# paid for two full assemblers.
+#
+# TTL RATHER THAN A PLAIN CACHE, DELIBERATELY. What this loads is the LIVE
+# data: rosters and depth charts change mid-week when a starter is ruled out,
+# and a permanent cache would serve a stale QB1 for the rest of the week.
+# Thirty minutes keeps the board responsive while still picking up news
+# within one refresh cycle. Lower it if that feels too slow to react; the
+# cost of a miss is one rebuild.
+@st.cache_data(ttl=1800, show_spinner=False)
 def build_upcoming_week(season, week):
     """Manufacture player-week rows for a game not yet played (e.g. Week 1),
     bridging touches and TD rate from the prior season. Fallback when
@@ -224,44 +239,42 @@ def player_history(season, player_name, min_touches=0.5):
     return out.sort_values("week").reset_index(drop=True)
 
 
-@st.cache_data(show_spinner=False)
-def _all_player_stats():
-    """Unfiltered player stats for grading.
-
-    actual_result must NOT read build_dataset: that frame applies
-    `touches >= 3`, so any player with 0, 1 or 2 touches has no row and
-    returned None, and the bet silently never graded. Those players are
-    almost all non-scorers, so the rows that vanished were overwhelmingly
-    LOSSES, which flattered every TD calibration number.
-    """
-    ps = data_utils.load_player_stats(SEASONS)
-    return ps.to_pandas() if hasattr(ps, "to_pandas") else ps
-
-
 def actual_result(season, week, player_name):
     """Did the player score a TD? Returns 100 (yes) or 0 (no), or None.
 
-    Three distinct cases, and conflating them is what caused the bug:
+    Three distinct cases, and conflating them is what caused the original bug:
       - played and scored           -> 100
       - played and did not score    -> 0    (a real loss, previously invisible)
       - did not play at all         -> None (genuinely ungradeable)
+
+    Now delegates to data_utils.actual_stat, TWICE, because this market needs
+    two columns summed and the helper returns one. That is fine: each call
+    applies the same normalised fallback and the same collision guard, and
+    both return 0.0 rather than None when the row exists with a null stat.
+
+    So `both None` means no stat row at all, which is the ungradeable case,
+    and anything else means the player was active.
+
+    THE GUARD MATTERS MORE HERE THAN ANYWHERE. This market spans WR, TE, RB
+    and QB, which is the widest population of the five, so it is the most
+    exposed to the 21 duplicate normalized names name_resolve.py measured.
+    The position list narrows it to the four offensive groups, and the guard
+    refuses whatever ambiguity survives that.
+
+    Kept deliberately: reading UNFILTERED rather than build_dataset(). That
+    frame applies `touches >= 3`, so a player with 0 to 2 touches had no row
+    and returned None, and the bet silently never graded. Those players are
+    almost all non-scorers, so the rows that vanished were overwhelmingly
+    LOSSES, which flattered every TD calibration number.
     """
-    ps = _all_player_stats()
-    m = ps[(ps["season"] == season) & (ps["week"] == week) &
-           (ps["player_display_name"] == player_name)]
-    if len(m) == 0:
-        # normalised fallback: FanDuel and nflverse spell names differently.
-        # norm_join_name is vectorised, so both sides need a Series.
-        wk = ps[(ps["season"] == season) & (ps["week"] == week)].copy()
-        if len(wk):
-            target = data_utils.norm_join_name(pd.Series([player_name])).iloc[0]
-            wk["_norm"] = data_utils.norm_join_name(wk["player_display_name"])
-            m = wk[wk["_norm"] == target]
-    if len(m) == 0:
-        return None  # no stat row at all, so the player was inactive
-    row = m.iloc[0]
-    rush_td = row.get("rushing_tds")
-    rec_td = row.get("receiving_tds")
-    rush_td = 0.0 if pd.isna(rush_td) else float(rush_td)
-    rec_td = 0.0 if pd.isna(rec_td) else float(rec_td)
-    return 100.0 if (rush_td + rec_td) > 0 else 0.0
+    pos = ["WR", "TE", "RB", "QB"]
+    rush = data_utils.actual_stat(season, week, player_name, "rushing_tds",
+                                  seasons=SEASONS, position=pos)
+    rec = data_utils.actual_stat(season, week, player_name, "receiving_tds",
+                                 seasons=SEASONS, position=pos)
+    if rush is None and rec is None:
+        # No stat row, or an unresolved name collision. Either way this is not
+        # gradeable, and a missing grade beats a wrong one.
+        return None
+    total = (rush or 0.0) + (rec or 0.0)
+    return 100.0 if total > 0 else 0.0

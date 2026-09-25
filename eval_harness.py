@@ -120,11 +120,33 @@ MARKET_SPEC = {
     "qb_passing": ("qb_passing", "passing_yards"),
     "qb_rushing": ("qb_rushing", "rushing_yards"),
 }
-# qb_rushing is NOT in the default set. player_rush_yds covers both RB and QB
-# rushing, so QB props are stored as market = 'rushing' and there are zero
-# qb_rushing rows to fetch. Left selectable so the fix can be measured once
-# Phase 3.7 splits on position after the join.
-DEFAULT_MARKETS = ("receiving", "receptions", "rushing", "qb_passing")
+# qb_rushing has NO STORED LABEL, and this is a property of the data source
+# rather than an oversight. The Odds API uses one market key for rushing yards
+# regardless of who is carrying, and the FanDuel transcription schema does the
+# same, so QB props sit in the table as market = 'rushing'. MARKET_MAP in db.py
+# is not missing an entry; there is nothing to put in it.
+#
+# FIXED September 24 2026 (plan item 3.5). The label is DERIVED after the fact
+# from nflverse position by data_utils.split_qb_rushing, which is the only
+# place the information exists. Deriving rather than relabelling at write time
+# means it applies retroactively to all 184,782 cached rows, and it leaves the
+# app's storage and every query against it untouched.
+#
+# Measured on the full cache: 11,126 of 33,885 rushing rows are QBs (32.8
+# percent, stable across all four seasons), 99.98 percent of rushing rows
+# resolve to a position, and the reassigned rows join qb_rushing's own dataset
+# at 99.99 percent on season, week and name.
+#
+# FETCH_MARKET maps a DERIVED market to the label it is STORED under. Anything
+# absent is stored under its own name. This exists because fetch_lines filters
+# the query with .in_("market", ...) and load_lines filters the cache the same
+# way, so requesting a derived market directly would return zero rows.
+FETCH_MARKET = {
+    "qb_rushing": "rushing",
+}
+
+DEFAULT_MARKETS = ("receiving", "receptions", "rushing", "qb_passing",
+                   "qb_rushing")
 ALL_SEASONS = (2023, 2024, 2025, 2026)
 LINE_SOURCES = ("fanduel", "consensus", "best")
 
@@ -919,11 +941,49 @@ def main():
             client_box["c"] = connect(sec)
         return client_box["c"]
 
-    lines = load_lines(client_factory, seasons, markets, args.cache,
+    # Fetch under the STORED market labels, derive the split, then filter to
+    # what was actually asked for. Doing it in this order matters: asking the
+    # database for 'qb_rushing' returns nothing, because that label does not
+    # exist upstream. See the FETCH_MARKET comment.
+    fetch_markets = sorted({FETCH_MARKET.get(m, m) for m in markets})
+    derived = [m for m in markets if m in FETCH_MARKET]
+    if derived:
+        print(f"  derived markets {derived} are stored as "
+              f"{[FETCH_MARKET[m] for m in derived]}; fetching "
+              f"{fetch_markets} and splitting on nflverse position")
+
+    lines = load_lines(client_factory, seasons, fetch_markets, args.cache,
                        args.refresh)
     if lines.empty:
         print("  no lines found. Has fill_weeks.py been run?")
         return
+
+    if derived:
+        from models import data_utils as _du
+        # The gate is set from measurement, not from a guess: the full cache
+        # resolves 99.98 percent of rushing rows to a position, and the eight
+        # that fail are abbreviated first initials that cannot be resolved by
+        # name at all. 0.98 leaves headroom for a rookie whose nflverse
+        # spelling has not been aliased yet, and ABORTS rather than quietly
+        # scoring a market whose labels are mostly unresolved.
+        lines, split_report = _du.split_qb_rushing(lines, min_match_rate=0.98)
+        print(f"  split: {split_report['reassigned']} of "
+              f"{split_report['rows_in_from_market']} "
+              f"{split_report['from_market']} rows reassigned to "
+              f"{split_report['to_market']} "
+              f"({split_report['reassigned_share']:.1%}), "
+              f"{split_report['distinct_qbs']} distinct players, "
+              f"match rate {split_report['match_rate']:.4f}, "
+              f"{split_report['unmatched']} unmatched")
+
+        before = len(lines)
+        lines = lines[lines["market"].isin(markets)].reset_index(drop=True)
+        if len(lines) != before:
+            print(f"  dropped {before - len(lines)} rows in fetched-but-not-"
+                  f"requested markets")
+        if lines.empty:
+            print("  no lines left after the market filter")
+            return
     print(f"  {len(lines)} prop rows, {lines['book'].nunique()} books")
     if lines["week"].isna().all():
         print("\n  >>> every week is null. Run fill_weeks.py first, or the")

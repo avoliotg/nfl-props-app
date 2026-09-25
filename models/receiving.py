@@ -140,6 +140,21 @@ def project_week(season, week, min_targets=1.5):
     return wk[cols].sort_values("projection", ascending=False).reset_index(drop=True)
 
 
+# PERFORMANCE, September 25. This function had NO cache decorator in any of
+# the six market modules, and project_week calls it unconditionally on every
+# call. Streamlit re-runs the whole script on each widget interaction, so
+# every dropdown click re-read rosters and schedules (and depth charts, for
+# the QB markets) from scratch, per market. app.py renders the rushing board
+# from BOTH rushing.project_week and qb_rushing.project_week, so that board
+# paid for two full assemblers.
+#
+# TTL RATHER THAN A PLAIN CACHE, DELIBERATELY. What this loads is the LIVE
+# data: rosters and depth charts change mid-week when a starter is ruled out,
+# and a permanent cache would serve a stale QB1 for the rest of the week.
+# Thirty minutes keeps the board responsive while still picking up news
+# within one refresh cycle. Lower it if that feels too slow to react; the
+# cost of a miss is one rebuild.
+@st.cache_data(ttl=1800, show_spinner=False)
 def build_upcoming_week(season, week):
     """Manufacture player-week rows for a game not yet played (e.g. Week 1),
     bridging rolling features from prior seasons. Used as a fallback when
@@ -239,14 +254,8 @@ def confidence_for_gap(gap):
 
 
 def actual_yards(season, week, player_name):
-    """Return a player's actual receiving yards for a season/week, or None."""
-    df = build_dataset()
-    m = df[(df["season"] == season) & (df["week"] == week) &
-           (df["player_display_name"] == player_name)]
-    if len(m) == 0:
-        return None
-    val = m.iloc[0]["receiving_yards"]
-    return None if pd.isna(val) else float(val)
+    """Deprecated alias. Kept so any existing caller keeps working."""
+    return actual_result(season, week, player_name)
 
 
 def player_history(season, player_name, min_targets=0.5):
@@ -275,11 +284,26 @@ def all_players(season):
 
 
 def actual_result(season, week, player_name):
-    """Actual receiving yards for grading. Returns the number, or None."""
-    df = build_dataset()
-    m = df[(df["season"] == season) & (df["week"] == week) &
-           (df["player_display_name"] == player_name)]
-    if len(m) == 0:
-        return None
-    val = m.iloc[0]["receiving_yards"]
-    return None if pd.isna(val) else float(val)
+    """Actual receiving yards for grading. Returns the number, or None.
+
+    Delegates to the shared helper. Three defects are fixed by doing so, and
+    a fourth is avoided:
+
+      - it read build_dataset(), which is the EWMA/snap-join frame cached for
+        the board, and is far more work than grading needs
+      - it returned None where a null stat on an active player is a real ZERO
+      - it had no normalised-name fallback, so "Audric Estime" against
+        nflverse's accented spelling never graded
+      - name_resolve.py measured 21 normalized names in nflverse mapping to
+        more than one player_id. actual_stat refuses on those rather than
+        taking iloc[0] and possibly grading against the wrong man.
+
+    position is passed explicitly as WR/TE/RB to MATCH build_dataset's own
+    filter. That is not cosmetic: the worst collision is `michael carter`, a
+    CB with 51 rows against an RB with 47, and the position filter already
+    made the cornerback invisible here. Dropping it would make the guard fire
+    and return None on a player this market grades correctly today.
+    """
+    return data_utils.actual_stat(season, week, player_name,
+                                  "receiving_yards", seasons=SEASONS,
+                                  position=["WR", "TE", "RB"])
