@@ -188,11 +188,28 @@ def render_html_table(df, cols, aligns):
                 style += f"font-weight:700;color:{sc};"
                 cells += f'<td style="{style}">{val}</td>'
             elif c == "Edge":
-                ec = "#4caf72" if val > 0 else "#e0655a" if val < 0 else "#c0b090"
-                style += f"font-weight:800;color:{ec};"
-                cells += f'<td style="{style}">{val:+.1f}</td>'
+                # A missing edge is a real state, not an error: a
+                # reference-only row carries no edge by design. Guard
+                # here as well as in the column selection, because a
+                # single such row mixed into an otherwise-priced
+                # market would not set reference_only_market and would
+                # crash the entire board.
+                if val is None or (isinstance(val, float) and pd.isna(val)):
+                    style += "color:#8a7f70;"
+                    cells += f'<td style="{style}">—</td>'
+                else:
+                    ec = ("#4caf72" if val > 0 else
+                          "#e0655a" if val < 0 else "#c0b090")
+                    style += f"font-weight:800;color:{ec};"
+                    cells += f'<td style="{style}">{val:+.1f}</td>'
             elif isinstance(val, (int, float)) and pd.notna(val):
                 cells += f'<td style="{style}">{val:.1f}</td>'
+            elif val is None or (isinstance(val, float) and pd.isna(val)):
+                # A numeric column with no value. This previously
+                # fell through to the string branch and printed the
+                # literal "None" or "nan".
+                style += "color:#8a7f70;"
+                cells += f'<td style="{style}">—</td>'
             else:
                 if c == "Player":
                     style += "font-weight:600;"
@@ -379,18 +396,29 @@ with tab_board:
                     # CALIBRATION_SUSPENDED on September 25 after three
                     # defects were found inflating low-volume players.
                     if getattr(module, "CALIBRATION_SUSPENDED", False):
+                        # Carry the IMPLIED probability even though the
+                        # verdict is withheld, so the comparison can be made
+                        # by eye without the app asserting one. Note it is
+                        # VIG-INCLUSIVE: a one-sided market cannot be
+                        # devigged (devig.py refuses it), so this overstates
+                        # the true probability, and the model reading lower
+                        # is expected rather than a disagreement.
                         return pd.Series({"p_over": r["projection"],
                                           "edge": None, "side": "",
                                           "tier": "", "approx": False,
-                                          "reference_only": True})
+                                          "reference_only": True,
+                                          "implied": module.american_to_prob(
+                                              r["over_odds"])})
                     # TD: model already outputs a probability; edge = model% - implied%
                     implied = module.american_to_prob(r["over_odds"])
                     if implied is None:
                         return pd.Series({"p_over": r["projection"], "edge": None,
-                                          "side": "", "tier": "", "approx": False})
+                                          "side": "", "tier": "", "approx": False,
+                                          "implied": None})
                     e = round(r["projection"] - implied, 1)
                     return pd.Series({
                         "p_over": r["projection"], "edge": e,
+                        "implied": implied,
                         "side": "OVER" if e > 0 else "—",
                         "tier": mc.tier_for_edge(e), "approx": False})
                 else:
@@ -450,9 +478,22 @@ with tab_board:
             if IS_PROB:
                 show = graded.rename(columns={
                     "player_display_name": "Player", "projection": "Model %",
-                    "over_odds": "Odds", "p_over": "P(over)%", "edge": "Edge",
+                    "over_odds": "Odds", "implied": "Implied %",
+                    "p_over": "P(over)%", "edge": "Edge",
                     "side": "Side", "tier": "Tier", "captured_display": "Captured"})
-                cols = ["Player", "Model %", "Odds", "Edge", "Side", "Tier", "Captured"]
+                if reference_only_market:
+                    # Same reasoning as the non-probability branch below: an
+                    # absent column says the market makes no claim, a blank
+                    # one looks broken. This branch built Edge, Side and Tier
+                    # unconditionally, so suppressing anytime_td set edge to
+                    # None and then asked render_html_table to colour it,
+                    # raising TypeError: '>' not supported between NoneType
+                    # and int.
+                    cols = ["Player", "Model %", "Odds", "Implied %",
+                            "Captured"]
+                else:
+                    cols = ["Player", "Model %", "Odds", "Implied %", "Edge",
+                            "Side", "Tier", "Captured"]
             else:
                 show = graded.rename(columns={
                     "player_display_name": "Player", "projection": "Proj",
@@ -499,9 +540,22 @@ with tab_board:
                 st.caption("⚠️ Rows without imported odds use a −110 assumption "
                            "(edge is approximate).")
             st.markdown(render_html_table(show, cols, aligns), unsafe_allow_html=True)
-            st.caption("Hover any column header (ⓘ) for what it means. "
-                       "Edge = model probability minus the vig-adjusted breakeven, in points. "
+            if reference_only_market:
+                cap = ("Hover any column header (ⓘ) for what it means. "
+                       "No Edge, Side or Tier is shown for this market. "
                        "Captured = when that line was imported.")
+                if IS_PROB:
+                    cap += (" Implied % comes straight from the odds and "
+                            "INCLUDES the vig, so it overstates the true "
+                            "probability. A one-sided market cannot be "
+                            "devigged, so the model reading lower than "
+                            "Implied % is expected and is not by itself a "
+                            "disagreement.")
+                st.caption(cap)
+            else:
+                st.caption("Hover any column header (ⓘ) for what it means. "
+                           "Edge = model probability minus the vig-adjusted breakeven, in points. "
+                           "Captured = when that line was imported.")
 
             # ---- save to log ----
             save_cols = ["player_display_name", "projection", "line",
