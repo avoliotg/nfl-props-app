@@ -194,7 +194,47 @@ MARKETS = tuple(PARAMS)
 #     zero so the projection never enters the price.
 #
 BLEND = {
-    "receptions": dict(alpha=0.1491, beta=0.2261),
+    # RETIRED 2026-09-25. beta was 0.2261, measured against the LINE with a
+    # game-clustered t of +6.5 and confirmed by four independent routes. That
+    # measurement was not wrong. What was wrong was the benchmark.
+    #
+    # receptions is 93 percent flat on the line because FanDuel moves
+    # reception prices through the ODDS, so the line is the STALE quantity
+    # and the price is the sharp one. A model that improves on a stale
+    # quantity adds nothing to a sharp one.
+    #
+    # receptions_shipped_vs_price.py tested the SHIPPED path (verified
+    # identical to mc.prob_over, max abs diff 0.00e+00 on 7,452 rows)
+    # against FanDuel's own devigged price:
+    #
+    #   log loss      0.69027 vs the market's 0.68407
+    #                 delta +0.00620, 95% [+0.00322, +0.00918]
+    #   encompassing  coefficient on (shipped minus market) t = +0.60
+    #   book_p coef   +1.0890, so the market is well calibrated and has no
+    #                 slack to exploit
+    #
+    # The encompassing test is the one betting cares about, and its power at
+    # this sample size is t +7.45 when a real advantage is planted. So this
+    # is a POWERED null. It is also the strong direction of an asymmetry:
+    # these blend constants were fitted on the very rows being scored, so
+    # the test was biased in favour of the price and it still failed.
+    #
+    # WHY NOT A WIDER SIGMA. The natural guess was over-confidence, fixable
+    # by pricing around resid_sd. The opposite is true. The shipped price
+    # spans 0.377 to 0.628 with sd 0.0258 against the market's 0.0659, so it
+    # is two and a half times LESS dispersed. It is well calibrated (bin
+    # biases +0.0014, -0.0079, +0.0239, better than the market's own) because
+    # it barely has an opinion. Widening sigma would flatten it further.
+    #
+    # TO REVIVE: a positive encompassing coefficient against the DEVIGGED
+    # PRICE, not a larger beta against the line. The mean absolute
+    # disagreement is 0.0535, which bounds the upside no matter how
+    # informative the disagreement turns out to be.
+    #
+    # alpha is UNCHANGED at 0.1491. It is the mean-versus-median offset, a
+    # valid pricing parameter and an invalid betting signal, and it still
+    # belongs in the distribution.
+    "receptions": dict(alpha=0.1491, beta=0.0),
     "receiving":  dict(alpha=3.4623, beta=0.0),
     "rushing":    dict(alpha=4.0067, beta=0.0),
     "qb_passing": dict(alpha=0.0,    beta=0.0),
@@ -541,12 +581,28 @@ def _self_test():
         print("  %-12s line %7.1f  proj high -> %8.3f  proj low -> %8.3f  "
               "%s" % (mk, ln, hi, lo, "OK" if good else "FAIL"))
 
-    print("\n[10] has_model_signal: exactly one market should carry signal")
-    live = [mk for mk in BLEND if has_model_signal(mk)]
-    good = live == ["receptions"]
+    print("\n[10] has_model_signal: which markets carry signal")
+    # UPDATED 2026-09-25. This asserted `live == ["receptions"]`, written
+    # when receptions was the only market with a nonzero beta. Receptions
+    # was retired that day (see the note in BLEND), so the assertion was
+    # stale and failed the whole self-test on a change that was deliberate.
+    #
+    # The check now asserts the INVARIANT rather than a snapshot: every
+    # market with a nonzero beta must be in EXPECTED_LIVE, and every market
+    # in EXPECTED_LIVE must have one. That still fails loudly if a beta
+    # changes by accident, without needing an edit every time the set
+    # legitimately changes.
+    EXPECTED_LIVE = []      # no market currently beats the devigged price
+    live = sorted(mk for mk in BLEND if has_model_signal(mk))
+    good = live == sorted(EXPECTED_LIVE)
     ok &= good
-    print("  markets with beta != 0: %s  %s"
-          % (live or "none", "OK" if good else "FAIL"))
+    print("  markets with beta != 0: %s" % (live or "none"))
+    print("  expected:               %s  %s"
+          % (sorted(EXPECTED_LIVE) or "none", "OK" if good else "FAIL"))
+    if not good:
+        print("  A beta changed without EXPECTED_LIVE being updated. Either",
+              "the change was accidental, or the list needs editing and the",
+              "reason recorded in BLEND.")
 
     print("\n[11] blend junk inputs never raise")
     for args in (("receptions", None, 2.5), ("receptions", float("nan"), 2.5),

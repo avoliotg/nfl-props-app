@@ -8,9 +8,12 @@ import betlog
 # version token that writes bump, so re-runs are free and a write still
 # invalidates. See app_cache.py for the measurements.
 import app_cache
+import rules
 from models import data_utils
 import db
 import mc
+import mc_pricing
+import devig
 
 
 def _default_season():
@@ -142,7 +145,8 @@ if WELCOME_BANNER.strip():
 
 st.divider()
 
-tab_labels = ["📋 Board", "📊 Scorecard", "🎯 Top Plays", "🔍 Market History", "📈 Line Movement", "📖 Guide"]
+tab_labels = ["📋 Board", "📊 Scorecard", "🎯 Top Plays", "🔍 Market History",
+              "📈 Line Movement & Side Picker", "📖 Guide"]
 if IS_ADMIN:
     tab_labels.append("📥 Import")
     tab_labels.append("📤 Export")
@@ -161,7 +165,7 @@ HEADER_HELP = {
     "P(over)%": "Model's probability the result lands OVER the line.",
     "Edge": "Model probability minus the vig-adjusted breakeven, in points. Positive = value.",
     "Side": "Which side the edge favors (— means no positive-edge side = pass).",
-    "Tier": "Pass / Lean / Strong / Max — bigger edge = stronger.",
+    "Tier": "Pass / Lean / Strong / Max. A bigger edge is a stronger tier.",
     "Captured": "When this line was imported.",
 }
 
@@ -262,7 +266,7 @@ with tab_board:
     # ... rest of the existing Board tab code continues below, unchanged ...
 
 with tab_board:
-    st.subheader(f"{market_name} — Board")
+    st.subheader(f"{market_name} · Board")
 
     c1, c2 = st.columns(2)
     with c1:
@@ -373,7 +377,7 @@ with tab_board:
             if len(bad) > 0:
                 names = ", ".join(f"{r['player_display_name']} ({r['line']:.0f})"
                                   for _, r in bad.iterrows())
-                override = st.checkbox("☑ I've checked — grade the flagged lines anyway",
+                override = st.checkbox("☑ I have checked. Grade the flagged lines anyway",
                                        key="sanity_override")
                 if not override:
                     st.warning(f"⚠️ These lines look off (outside 0-{max_line}): {names}. "
@@ -423,6 +427,35 @@ with tab_board:
                         "tier": mc.tier_for_edge(e), "approx": False})
                 else:
                     effective_market = "qb_rushing" if r.get("is_qb_model") else market_key
+                    # BELT AND BRACES. mc.edge_calc sets reference_only from
+                    # its own logic, which lives in mc.py. Consulting
+                    # mc_pricing.has_model_signal here as well means the
+                    # single beta in BLEND is AUTHORITATIVE: retiring a market
+                    # by setting its beta to 0.0 suppresses the verdict even
+                    # if mc.py's own check ever drifts. Receptions was retired
+                    # this way on 2026-09-25.
+                    if not mc_pricing.has_model_signal(effective_market):
+                        _p = mc.prob_over(effective_market, r["projection"],
+                                          r["line"], GAMES_PLAYED)
+                        # With beta clipped to zero the blended mean is just
+                        # line + alpha, so the model's P(over) depends ONLY on
+                        # the LINE and is identical for every player. It looked
+                        # like information and was not. The market's DEVIGGED
+                        # probability is player-specific (sd 0.0659 across 277
+                        # distinct values on receptions) and is the best
+                        # calibrated number available for these props: book_p
+                        # coefficient +1.0890, bin biases -0.008 to +0.043.
+                        # The whole conclusion of 2026-09-25 is that the PRICE
+                        # is the sharp quantity, so that is what to show.
+                        _d = devig.devig_two_sided(r.get("over_odds"),
+                                                   r.get("under_odds"),
+                                                   "additive")
+                        return pd.Series({"p_over": _p, "edge": None,
+                                          "side": "", "tier": "",
+                                          "approx": False,
+                                          "reference_only": True,
+                                          "mkt_p": (_d["p_over"]
+                                                    if _d["valid"] else None)})
                     res = mc.edge_calc(effective_market, r["projection"], r["line"],
                                        GAMES_PLAYED,
                                        over_odds=r.get("over_odds"),
@@ -465,15 +498,33 @@ with tab_board:
                             | (is_ref & graded["p_over"].notna())].copy()
             reference_only_market = bool(len(graded) > 0
                                          and graded["reference_only"].all())
+            # Sorting a reference-only board by the model's p_over is sorting
+            # by the line, since that is all it now depends on. The market's
+            # devigged probability is the informative ordering.
+            _sort_by = "edge"
+            if reference_only_market:
+                _sort_by = ("mkt_p" if "mkt_p" in graded.columns
+                            and graded["mkt_p"].notna().any() else "p_over")
             graded = graded.sort_values(
-                "p_over" if reference_only_market else "edge",
-                ascending=False).reset_index(drop=True)
+                _sort_by, ascending=False).reset_index(drop=True)
 
             # format the import timestamp for display (compact, human-readable)
             graded["captured_display"] = pd.to_datetime(
                 graded["captured_at"], errors="coerce", utc=True
             ).dt.strftime("%m/%d %I:%M%p")
             graded["captured_display"] = graded["captured_display"].fillna("—")
+
+            # PERCENT SCALING. mc returns P(over) on 0-1 while the column has
+            # always been labelled "P(over)%", so a 50 percent probability
+            # displayed as "0.5". Fixed here rather than in mc, because the
+            # saved log and the downstream calculations expect 0-1.
+            # anytime_td is excluded: its projection is already a percentage.
+            if not IS_PROB:
+                for _src, _dst in (("p_over", "p_over_pct"),
+                                   ("mkt_p", "mkt_p_pct")):
+                    if _src in graded.columns:
+                        graded[_dst] = pd.to_numeric(
+                            graded[_src], errors="coerce") * 100.0
 
             if IS_PROB:
                 show = graded.rename(columns={
@@ -497,13 +548,21 @@ with tab_board:
             else:
                 show = graded.rename(columns={
                     "player_display_name": "Player", "projection": "Proj",
-                    "line": "Line", "p_over": "P(over)%", "edge": "Edge",
+                    "line": "Line", "p_over_pct": "P(over)%",
+                    "mkt_p_pct": "Mkt P(over)%", "edge": "Edge",
                     "side": "Side", "tier": "Tier", "captured_display": "Captured"})
                 if reference_only_market:
-                    # no Edge, Side or Tier column at all. A blank column
-                    # invites the reader to wonder what is missing; an absent
-                    # one says the market does not make that claim.
-                    cols = ["Player", "Proj", "Line", "P(over)%", "Captured"]
+                    # No Edge, Side or Tier: a blank column invites the reader
+                    # to wonder what is missing, an absent one says the market
+                    # makes no such claim.
+                    #
+                    # The MODEL's P(over) is dropped too, because with beta at
+                    # zero it is line + alpha for every player and therefore
+                    # identical down the whole column. The MARKET's devigged
+                    # probability replaces it: player-specific and well
+                    # calibrated.
+                    cols = ["Player", "Proj", "Line", "Mkt P(over)%",
+                            "Captured"]
                 else:
                     cols = ["Player", "Proj", "Line", "P(over)%", "Edge",
                             "Side", "Tier", "Captured"]
@@ -517,14 +576,20 @@ with tab_board:
                     f"shown for this market")
                 st.info(
                     getattr(module, "SUSPENSION_REASON", None) or
-                    "This market is shown for reference. Measured against "
-                    "2023-2026 closing lines, the model adds nothing to the "
-                    "line here: beta is statistically indistinguishable from "
-                    "zero, so the projection does not enter the price and no "
-                    "edge is claimed. The probability shown is the line plus a "
-                    "measured skew correction, priced through the market's "
-                    "own distribution. Receptions is currently the only market "
-                    "with measurable signal.")
+                    "This market is shown for reference: the projection does "
+                    "not enter the price, so no edge is claimed. The "
+                    "probability is the line plus a measured skew correction, "
+                    "priced through the market's own distribution. "
+                    "NO market currently carries a model verdict. Receptions "
+                    "was the last one and was retired on 2026-09-25: its beta "
+                    "of 0.2261 was real but measured against the LINE, and "
+                    "receptions is 93 percent flat on the line because "
+                    "FanDuel moves it through the ODDS. Tested against the "
+                    "devigged price, the shipped probability lost on log loss "
+                    "and returned an encompassing t of +0.60. Side-picking "
+                    "now lives in the Line Movement & Side Picker tab, where "
+                    "two pricing-bias rules with measured out-of-sample "
+                    "support fire on specific props.")
             else:
                 n_positive = int((graded["edge"] > 0).sum())
                 tier_counts = graded["tier"].value_counts()
@@ -606,7 +671,7 @@ with tab_player:
     # ... rest of the existing Market History tab code continues below, unchanged ...
 
 with tab_player:
-    st.subheader(f"{market_name} — Market History")
+    st.subheader(f"{market_name} · Market History")
 
     pseason = st.selectbox("Season", module.available_seasons(),
                            index=len(module.available_seasons()) - 1,
@@ -621,7 +686,7 @@ with tab_player:
         if len(hist) == 0:
             st.info("No projection history for this player/season.")
         else:
-            st.markdown(f"#### {player} — model vs. actual ({pseason})")
+            st.markdown(f"#### {player} · model vs. actual ({pseason})")
             base_cols = ["week", "opponent_team", "projection", "actual"]
             extra_cols = [c for c in hist.columns if c not in base_cols]
 
@@ -694,7 +759,7 @@ with tab_scorecard:
     # ... rest of the existing Scorecard tab code continues below, unchanged ...
 
 with tab_scorecard:
-    st.subheader(f"{market_name} — Season Scorecard")
+    st.subheader(f"{market_name} · Season Scorecard")
 
     log = betlog.load_log(st.session_state.user)
     log = log[log["market"] == market_key] if len(log) else log
@@ -751,12 +816,12 @@ with tab_scorecard:
                 n = len(df)
                 return f"{w}/{n} ({w/n*100:.0f}%)" if n else "—"
             h1, h2 = st.columns(2)
-            h1.metric("Model — all graded", rate(gr))
+            h1.metric("Model, all graded", rate(gr))
             bets = gr[gr["bet"] == True]
             h2.metric("Your actual bets", rate(bets) if len(bets) else "—")
             # ============ TOP PLAYS (merged across all markets) ============
 with tab_top:
-    st.subheader("🎯 Top Plays — all markets, ranked by edge")
+    st.subheader("🎯 Top Plays · all markets, ranked by edge")
     st.caption("Pulls every pick you've saved to the log for the selected week, "
                "across all markets, ranked by edge (model probability minus the "
                "vig-adjusted breakeven). Enter + save picks in each market's Board first.")
@@ -839,11 +904,16 @@ with tab_top:
 
 # ============ LINE MOVEMENT ============
 with tab_movement:
-    st.subheader("📈 Line Movement")
+    st.subheader("📈 Line Movement & Side Picker")
     st.caption("Every captured snapshot for each player, across all markets. "
                "🟢 toward = the line moved toward the model's read (market agreeing). "
                "🔴 away = it moved against the model (be more skeptical). "
                "Sparklines need 3+ snapshots to render. Check **Bet?** and hit Save to log picks.")
+    st.caption("The **Rule** column flags props where a rule with measured "
+               "out-of-sample support fires, and on which side. Two rules are "
+               "live and both say UNDER; they are PRICING BIASES, not model "
+               "verdicts, so a rule can fire where the model has no opinion. "
+               "The column is absent for markets no rule covers.")
 
     lm_season = st.selectbox("Season", module.available_seasons(),
                              index=len(module.available_seasons()) - 1, key="lm_season")
@@ -877,10 +947,43 @@ with tab_movement:
         st.caption("Filtering applies to every market below. Rows whose player "
                    "could not be matched to a team are hidden while filtering.")
 
+    lm_rule_hits, lm_rule_errors = [], []
+
     for mkt_key, mkt_label in MARKETS.items():
         st.markdown(f"#### {mkt_key}")
         mv = app_cache.get_line_movement(lm_season, lm_week, mkt_label,
                                          st.session_state.user)
+
+        # ---- side-picker rules for this market ----
+        # rules.py is the decision layer: it consumes a prop's market, line
+        # and projection and reports whether a rule with measured
+        # out-of-sample support fires. It is separate from mc_pricing on
+        # purpose, because both live rules are PRICING BIASES and rushing's
+        # beta is -0.041, so routing them through the pricing layer would
+        # invent a projection-based story for an effect that has none.
+        rule_side = {}
+        if len(mv):
+            try:
+                _props = pd.DataFrame({
+                    "market": mkt_label,
+                    "player": mv["player"],
+                    # raw_line is the actual line; latest_line is an implied
+                    # probability for anytime_td, which no rule covers anyway
+                    "line": mv["raw_line"] if "raw_line" in mv.columns
+                            else mv["latest_line"],
+                    "season": lm_season,
+                    "week": lm_week,
+                    "projection": mv["raw_projection"]
+                                  if "raw_projection" in mv.columns else None,
+                })
+                _fired, _rep = rules.evaluate(_props)
+                for _, _fr in _fired.iterrows():
+                    rule_side[str(_fr["player"])] = _fr["side"]
+                lm_rule_hits.append((mkt_key, int(len(_fired)), _rep))
+            except Exception as _e:
+                # A rule layer failure must not take the tab down. Recorded
+                # so a silent zero cannot be mistaken for "nothing fired".
+                lm_rule_errors.append(f"{mkt_key}: {type(_e).__name__}: {_e}")
 
         if len(mv) == 0:
             st.caption(f"No {mkt_key} players with 2+ snapshots yet.")
@@ -928,6 +1031,7 @@ with tab_movement:
             "Line Captures": mv["snapshots"],
             "Trend": mv["series"],
             "Captured": cap_disp,
+            "Rule": mv["player"].map(lambda p: rule_side.get(str(p), "")),
             "Bet?": False,
         })
         for numcol in ["Proj", "Edge", f"First {line_word}", f"Latest {line_word}", "Move"]:
@@ -939,7 +1043,7 @@ with tab_movement:
         # item J1), so Tier, vs. Model, Proj, Edge and Side rendered as a
         # wall of "None" and "—". An empty column reads as a broken value
         # rather than an absent one. Any column with a real value is kept.
-        for _c in ["Tier", "vs. Model", "Proj", "Edge", "Side"]:
+        for _c in ["Tier", "vs. Model", "Proj", "Edge", "Side", "Rule"]:
             if _c not in grid.columns:
                 continue
             _vals = grid[_c].dropna()
@@ -1016,450 +1120,279 @@ with tab_movement:
                 st.caption(f"{picked}: {len(series)} snapshot(s) captured, "
                            f"from {row['first_line']:.1f} to {row['latest_line']:.1f} {line_word.lower()}.")
             
+    # ---- side-picker summary for the week ----
+    # A rule that fires zero times and a rule that could not be evaluated
+    # look identical in the grids above, so the counts are reported
+    # explicitly. rules.describe() carries the provenance and the caveats,
+    # which belong next to the output rather than in a commit message.
+    if lm_rule_errors:
+        st.warning("Side-picker could not be evaluated for: "
+                   + "; ".join(lm_rule_errors))
+    if lm_rule_hits:
+        _tot = sum(n for _, n, _ in lm_rule_hits)
+        _parts = [f"{k}: {n}" for k, n, _ in lm_rule_hits if n]
+        st.markdown(f"#### Side picker: {_tot} rule firing(s) this week"
+                    + (f" · {chr(0x2022).join(_parts)}" if _parts else ""))
+        if _tot == 0:
+            st.caption("No rule fired. That is a normal outcome, not a "
+                       "failure: the rushing rule needs a line at or below "
+                       f"{rules.RUSHING_MAX_LINE:g}, and the receiving rule "
+                       "needs an air-yards shock of z >= "
+                       f"{rules.AIR_YARDS_Z_TRIGGER:g} with the projection "
+                       "below the veto.")
+        with st.expander("Why these rules, and what they are not"):
+            st.code(rules.describe(), language=None)
+            _nf = []
+            for _k, _n, _rep in lm_rule_hits:
+                for _rname, _rr in (_rep.get("rules") or {}).items():
+                    if _rr.get("fired"):
+                        continue
+                    _why = _rr.get("reason") or "no reason recorded"
+                    _nf.append(f"{_k} / {_rname}: {_why}")
+            if _nf:
+                st.caption("Rules that did not fire, and why:")
+                for _line in _nf[:12]:
+                    st.caption(f"  {_line}")
                        # ============ GUIDE ============
 with tab_guide:
-    st.subheader("📖 OpalScales Guide")
+    st.subheader("OpalScales Guide")
 
     st.markdown("""
-### 🔮 What OpalScales Is
+### What this is
 
-OpalScales projects player prop outcomes using statistical models built on years of data,
-then compares those projections to the sportsbook line to find where there might be an edge.
-It currently covers NFL receiving yards, receptions, rushing yards (including a separate model
-just for quarterback rushing), QB passing yards, and anytime TD. The same approach can extend to
-other sports and markets down the road.
+OpalScales prices NFL player props and looks for places the sportsbook is
+wrong. It covers six markets: receiving yards, receptions, rushing yards, QB
+rushing yards, QB passing yards, and anytime touchdown.
 
-Think of it as a second opinion, not a crystal ball. It does the math so you can bring the
-football brain.
+It is a research tool that happens to have a betting interface. Most of what
+it has established is negative, and that is the point. Knowing which ideas do
+not work is what makes the remaining ones worth anything.
 
-> 💡 **Quick tip:** the **Line Movement** tab is one of the most useful screens here. At a glance,
-> look for **Tier** paired with **vs. Model** on the same row. Lean or better + 🟢 toward, is
-> often a good bet. See below for the full explanation.
+**Read this part before anything else.** As of 25 September 2026, the
+projection models do not beat the market in any of the six markets. Not one
+board shows a model edge, because none is supported by the evidence. What the
+app does show is two specific rules that do not depend on the projection at
+all, and a lot of reference data.
 
 ---
 
-### How to use it
+### The short version of what was learned
 
-1. **Pick a market** from the top dropdown.
-2. **Pick the season and week.**
-3. On the **Board**, enter the sportsbook's numbers. Lines auto-fill if they've been imported,
-   but you can type or adjust them yourself:
-   - Yardage and receptions markets: enter the **line** plus the **over and under odds**.
-   - Anytime TD: enter the **American odds** (e.g. 150 for +150, or -200).
-4. The app computes the **edge** for you, tells you which side it favors, and sorts it into a tier.
-5. **Save picks to the Log**, tick the ones you actually bet, and the **Scorecard** tracks how
-   they turn out over time.
+The models are good at estimating a player's expected output. They are not
+good at beating a sportsbook, and those are different problems.
 
-The other tabs: **Top Plays** ranks your best edges across every market at once. **Line Movement**
-shows how the sportsbook's numbers have shifted since you first captured them, which is often the
-most useful screen for deciding what to actually bet. **Market History** shows any player's
-projection history versus real results for the market you have selected.
+Every measurement of model skill in this project compared the projection to
+the **line**. The line turns out to be the stale number. FanDuel moves
+reception prices mainly through the **odds**, leaving the line flat about 93
+percent of the time. So a model that improves on the line can add nothing to
+the price you actually bet against.
 
-A note on your edits: anything you type on the Board lives only in your session. It never changes
-the shared line data, so feel free to test alternate lines or numbers from a different book. Your
-tinkering stays yours.
+Receptions was the last market with a model verdict. Its blend weight of
+0.2261 was real, measured with a clustered t of +6.5 and confirmed four
+separate ways. Tested against FanDuel's own devigged price, it lost on log
+loss and returned an encompassing t of +0.60. That test had the power to
+detect a real advantage at t +7.45, and the model's own blend constants were
+fitted on the very rows being scored, so the test was tilted in its favour and
+it still failed. The verdict was retired the same day.
+
+What survived is different in kind. Two **pricing biases**, where the book
+shades a price rather than misjudging a player. Neither uses the projection to
+pick a side.
+
+---
+
+### The two live rules
+
+Both say UNDER. That is not a preference, it is what survived. Every over side
+tested failed. Across qb_passing, qb_rushing, receiving and receptions, 28 of
+28 book and market combinations had the under below breakeven, and only
+rushing came out positive. The likely reason is well documented elsewhere:
+casual money prefers overs and books price accordingly.
+
+**Rushing, low line, under.** When a rushing line is 46.5 or below, bet the
+under. Return was 5.9 percent per unit staked, with a 95 percent interval of
+1.2 to 10.8 percent, over roughly 438 bets a season. It was positive in all
+four seasons, decayed smoothly as the line threshold rose rather than spiking
+at one value, held up at ordinary prices instead of only on short ones, and
+appeared at six of seven sportsbooks with under win rates between 54.8 and
+56.1 percent. That last point matters: the bias is in the market, not in one
+book. FanDuel is the place to play it only because its hold is 4.9 percent
+against 6.0 to 7.1 elsewhere. The model contributes nothing here and is not
+consulted.
+
+**Receiving, air yards, under.** When a receiver's recent air yards jump well
+above his own baseline, bet the under, unless the model projects him well
+above the line. Roughly 250 bets a season, about 8.4 percent over the market's
+own baseline. The mechanism is that the line keeps weighting recent downfield
+usage as heavily as it used to while that usage has become less predictive, so
+the price leans too far toward a couple of deep targets.
+
+The model's job in this rule is narrow and worth being precise about. Inside
+the rule, returns by projection quintile run +10.0, +7.9, +12.7, +8.6, then
+**-11.7** percent in the top quintile. So the model is not picking a
+direction, it is identifying one bad bucket. It vetoes, it does not confirm.
+
+Both rules appear in the **Line Movement and Side Picker** tab, in the
+**Rule** column, with a weekly summary underneath.
+
+---
+
+### Honest limits on those rules
+
+The rushing rule is the stronger of the two and I would still not call it
+settled. Both were found by searching this data, so their intervals are
+optimistic no matter how carefully each individual test was run. The receiving
+rule scores 0.072 on a best of grid placebo, which is borderline rather than
+clear, and its returns decay by season: 16.5 percent, then 10.2, then 7.0.
+That pattern is consistent with a market slowly correcting a stale weight,
+which would mean the edge closes on its own.
+
+At a few dollars a bet, 438 rushing bets a season at 5.9 percent is roughly 25
+to 130 dollars of expected profit. The honest return here is knowledge and
+enjoyment rather than income.
+
+---
+
+### How to use the app
+
+1. Pick a market, season and week at the top of the **Board** tab.
+2. Enter the sportsbook's numbers, or let imported lines fill in. Yardage and
+   receptions markets want the line plus both sides' odds. Anytime TD wants
+   the American odds on its single side.
+3. Read the board as reference. No market shows a model edge.
+4. Go to **Line Movement and Side Picker** for the actual picks. The **Rule**
+   column is where a validated rule has fired.
+5. Save picks to the log, tick the ones you really bet, and the **Scorecard**
+   follows them over time.
+
+Anything you type on the Board stays in your session. It never changes the
+shared line data, so you can test alternate numbers from another book freely.
 
 ---
 
 ### How to read the columns
 
-- **Proj**: the model's projection. Units depend on the market: *yards* (receiving, rushing,
-  passing), *catches* (receptions), or a *probability %* (anytime TD).
-- **Line**: the sportsbook's over/under number for that prop.
-- **Over / Under**: the American odds on each side of the line. These matter more than they look,
-  because the price is how the book takes its cut (see the edge example below).
-- **P(over)%**: the model's estimated probability the result lands over the line. This is the
-  honest "how likely" number, already accounting for how much uncertainty there is early in the
-  season.
-- **Edge**: the heart of the whole tool. It is your model probability minus the break-even
-  probability the odds require. Positive means the model thinks the bet is worth more than its
-  price. Negative means the price is too steep, even if the projection "agrees" with you. Measured
-  in percentage points, and it means the same thing across every market, so a +4 on a rushing prop
-  is directly comparable to a +4 on a TD.
-- **Side**: which side the edge favors (Over or Under). A dash means neither side clears break-even,
-  so it is a pass.
-- **Tier**: the plain-English verdict. **Pass** (skip it), **Lean** (small edge), **Strong** (solid
-  edge), **Max** (biggest edge). Bigger edge, stronger tier.
+**Proj** is the model's projection, in yards, catches, or a probability for
+anytime TD. Useful as an estimate of expected output. Not a betting signal.
+
+**Line** is the sportsbook's number.
+
+**Over and Under** are the American odds on each side. These matter more than
+they look, because the price is where the book takes its cut, and because on
+several markets the price carries more information than the line does.
+
+**Mkt P(over)%** is the market's own probability that the result lands over,
+with the sportsbook's margin removed. This is the best calibrated number on
+the board and it is not the model's. Bin it against real outcomes and it comes
+back with biases between -0.8 and +4.3 percentage points, and a slope of 1.09
+against 1.00 for a perfect forecast. When a well measured rule fires and this
+number disagrees, the rule has the better track record on these specific
+props, but that is the whole of the claim.
+
+**Implied %** appears on anytime TD instead. It comes straight from the odds
+and still **includes the book's margin**, because a one sided market cannot
+have the margin removed cleanly. So it overstates the true probability, and the
+model reading lower than it is expected rather than a disagreement.
+
+**Rule** in the Line Movement and Side Picker tab shows UNDER where a
+validated rule has fired.
+
+**Edge, Side and Tier** are absent from every market. They were removed
+deliberately, one market at a time, as each was measured and failed. An absent
+column says the app makes no claim. A blank one would just look broken.
 
 ---
 
-### A real example: why "the projection disagrees" is not enough
+### Anytime TD is showing a probability and nothing else
 
-Say the board shows a receiver projected for 7.1 receptions, and the line is 7.5, priced at +116
-over and -154 under. (These numbers are pulled from a real prop.)
+Three defects were found in that model on 25 September 2026, all inflating the
+numbers for low usage players.
 
-Your gut says: model says 7.1, line says 7.5, so bet the under. That gut is a trap, and the tool
-is built to catch it.
+The model was trained on players averaging 3 or more touches but served to
+players at 1.5 or more, so it was fitted on regular contributors and then
+asked about fringe ones. The week one bridge measured a player's scoring rate
+over his busiest weeks only. And it enforced no minimum game count at all, so
+one prior game with a touchdown became a 100 percent scoring rate. Nine
+players out of 460 were in exactly that state.
 
-The model does lean under, giving him about a 55% chance to land below 7.5. But look at the price.
-The under is -154, which means you need to win about 61% of the time just to break even after the
-book's cut. The model only gives you 55%. So the under is likely, but not likely *enough* to beat
-what you are paying for it. Both sides come back with a negative edge, so the honest call is a pass.
+That is how the board came to show fringe players at 27 to 40 percent against
+market prices of 3 to 10, every row tagged as a maximum confidence play.
 
-The lesson: a projection that "disagrees" with the line is not automatically a bet. Most props,
-most of the time, should be a pass. That is what an efficient market looks like. The edge number
-tells you the rare times the line is actually soft enough to be worth it. Chase the edge, not the
-gut feeling.
-
----
-
-### The Line Movement tab: letting the market check your work
-
-This is the tab that shows you something no projection can: whether the sportsbook's own
-number is drifting toward your model's read, or away from it.
-
-Every time lines get imported, the app saves a timestamped snapshot instead of overwriting the
-old one. The Line Movement tab compares your earliest captured line for each player against your
-most recent one, and shows the trend of every snapshot in between as a small sparkline.
-
-**How to read the "vs. Model" column:**
-
-- **🟢 toward** means the line moved in the direction your model favored. If the model liked the
-  under and the line dropped, that is the market drifting your way after you already spotted it.
-- **🔴 away** means the line moved against your model's read. The market is getting more confident
-  in the opposite direction.
-- **⚪ flat** means the line has not moved between your snapshots.
-
-**Why toward is a green flag:** the closing line is the sharpest number the market ever produces,
-because it has absorbed every injury report, every piece of news, and all the sharp money. If the
-line is moving toward the side your model already picked, that is independent confirmation that
-your read might be real. You bought in at a better number than the market later settled on.
-
-**Why away is a red flag, especially on a star:** a big adverse move on a heavily bet player
-usually means the market knows something the model does not. The model runs on last season's
-bridged data early in the year, so it cannot see a scheme change, a new role, or a beat reporter's
-practice note. When sharp money moves hard against you on a well known name, the honest move is
-to distrust the model, not the line.
-
-**Two real examples from Week 1:**
-
-*The green flag.* A model projection of 13.3 receiving yards against an opening line of 21.5. The
-model liked the under. Over the next two days, the line dropped to 18.5, a three yard move toward
-exactly the side the model favored, and the edge stayed strong at +12.1. The market was catching
-up to something the model had already flagged.
-
-*The red flag.* A star receiver projected for 56.3 yards against an opening line of 62.5. The model
-liked the under, and the edge looked appealing at +6.1. But the line then moved hard the other way,
-all the way up to 69.5. That is a seven point adverse move on a heavily bet player, which is a
-strong signal the market had information the model was missing. Despite a tempting edge number,
-this one deserves skepticism rather than a bet.
-
-**How to use it in practice:** scan each market's table sorted by how much the line moved, since
-the biggest movers are usually the most interesting cases in either direction. A solid edge paired
-with 🟢 toward is your best combination. A solid edge paired with 🔴 away on a popular player is
-worth a hard second look before you risk anything. You can check **Bet?** and save picks straight
-from this tab, same as from the Board.
-
-One honest caveat: this tool needs at least two captures of the same player to say anything, so
-early in the week or early in the season, many players will show nothing yet. Capturing lines more
-than once per week is what makes this tab useful.
+All three are fixed. A residual bias of about 3.8 percentage points remains in
+the low usage band, and the model still cannot tell a blocking tight end from
+a receiving one, because it only sees touches, scoring rate, and two position
+flags. The probability is shown. The verdict stays off until a full season
+re-measures it.
 
 ---
 
-### The season arc: trust it more as the year goes on
+### Ideas that were tested and do not work
 
-The model gets stronger as the season progresses, and it is honest about that.
+Worth listing so nobody spends another weekend on them.
 
-- **Weeks 1 to 3**: weakest. There is little current-season form yet, so it leans on last season's
-  data and wraps every projection in extra uncertainty. Edges will look smaller and more cautious
-  on purpose. Bet light, if at all.
-- **Midseason onward**: strongest. It is working off rich current-season data, and the extra
-  caution fades away. Trust it most here.
+**Line shopping across books.** Settling at the best available price returned
+-10.0 percent against +14.8 for FanDuel alone. The best line is best because
+it is the one most likely to be wrong in your favour, which is adverse
+selection rather than an edge.
 
-That early-season caution is not a bug, it is the point. When the model cannot see clearly, it
-tells you so by pulling its probabilities toward a coin flip. It earns your trust as real data
-piles up.
+**Fading recent performance.** The idea that the line overreacts to a bad game
+is appealing and false. FanDuel's weight on a player's last game matches the
+weight that actually predicts his next one, in all five two sided markets,
+with every interval covering zero. Zero of 40 versions of the rule cleared.
 
----
+**The model as a general side picker.** Measured directly against the devigged
+price in the market where it is strongest, it adds nothing.
 
-### Beware of Week 1
+**Alpha as a signal.** The gap between a projection's mean and median is a
+real distributional feature and a valid pricing input. It is not an edge, and
+treating it as one is a mistake this project made and corrected.
 
-The very start of the season is the trickiest stretch, so a few things to know:
-
-- **Rookies will not appear in Week 1.** They have no NFL history to project from. They show up
-  once they have banked a game or two of real data, and stay volatile until they have a few under
-  their belt.
-- **Players returning from a lost season may not appear either.** If someone missed all of last
-  year, there is no recent data to build on, so the model sits them out rather than guess.
-- **Players who changed teams** are projected on their new team and matchup, but their underlying
-  form still comes from last season, so read them with a little extra skepticism early.
-- **Stable veterans in the same role** are your safest ground in Week 1. Last year's data transfers
-  cleanly for them, so lean on those and use your judgment on the rest.
+**Obscure props being softer.** The theory that the rushing edge lives in props
+few books post is wrong. Returns at the most obscure end were **negative**.
+The edge is spread across the low line band, not concentrated in unstakeable
+corners.
 
 ---
 
-### Honest limitations (please read this part)
+### Why so much of this is negative
 
-- Projections are **guides, not guarantees.** Football is noisy, and a perfect matchup can still
-  bust. No model captures that.
-- The model is near the **ceiling of what pre-game data can predict.** The rest is genuine
-  randomness. Anyone claiming certainty is selling something.
-- It does not see **injuries, benchings, weather surprises, or coverage matchups** in real time.
-  That context is your job. Bring your football brain and layer it on top.
-- Markets are efficient. The edge, if it exists, is small and lives in the details, which is
-  exactly why the tool measures it so carefully.
+Roughly a third of the findings in this project have been artifacts caught
+before they became beliefs. A few examples, because the pattern is worth
+recognising.
+
+A blend weight of 0.655 on QB rushing yards looked like the second strongest
+signal in the project. It came entirely from props FanDuel never posted, where
+the reference line was noise. On a line that carries no information, the
+arithmetic drives that number toward 1.0 mechanically.
+
+A promising QB passing rule swung from 248 bets to 194 on a **two row** change
+to its inputs. Two rows cannot do that directly. It happened because the rule
+picked its own threshold by searching for the best one, so a tiny change made
+the search jump to a neighbouring value. Three separate findings in this
+project have had that same defect.
+
+The lesson that generalises: a good looking number is a hypothesis about a
+bug until it survives a test designed to kill it. Sign consistency across
+seasons, a smooth response to nearby thresholds, and a placebo that accounts
+for how many things were tried.
 
 ---
 
-### The OpalScales approach
+### What is still open
 
-Small edges. Obscure players over stars, because the market is sharpest on the names everyone
-watches. Discipline over hype. Track everything honestly, and let the results tell you what is
-actually working.
+Whether the receiving rule's decay continues, which would mean the market has
+closed it.
 
-*Bet responsibly. This is a tool for informed decisions, not financial advice.*
+Whether the QB passing side picker is real. It scores 0.010 on the same
+placebo the receiving rule scores 0.072 on, which is better, but it has only
+two scorable seasons and its returns thin out sharply as the sample grows. It
+is not wired into the app.
+
+Whether adding air yards to the receiving and receptions models helps. It is
+the one input measured as mispriced by the market and it is absent from both
+models.
+
+Forward results. Everything here was found by looking at 2023 to 2026 data,
+which no amount of care fully corrects for. The next genuinely new information
+arrives on Sunday.
 """)
-    # ============ IMPORT ============
-if IS_ADMIN:
-    with _tabs[6]:
-        st.subheader("📥 Import Lines from CSV")
-        st.caption("Paste CSV from the extraction prompt. Columns: "
-                   "player, market, line, over_odds, under_odds. "
-                   "Imports are cumulative — re-importing a player updates their line.")
-
-        if "import_result" in st.session_state:
-            r = st.session_state.pop("import_result")
-            st.success(f"✅ Imported {r['imported']} line(s) for {r['season']} Week {r['week']}.")
-            if r["by_market"]:
-                breakdown = " · ".join(f"{k}: {v}" for k, v in r["by_market"].items())
-                st.caption(f"By market — {breakdown}")
-            if r["bad_market"]:
-                st.warning("Unrecognized market(s) skipped: "
-                           + ", ".join(sorted(set(r["bad_market"]))))
-
-        ic1, ic2 = st.columns(2)
-        with ic1:
-            imp_season = st.number_input("Season", min_value=2020, max_value=2030,
-                                         value=_default_season(), step=1,
-                                         key="imp_season")
-        with ic2:
-            imp_week = st.number_input("Week", min_value=1, max_value=25,
-                                       value=1, step=1, key="imp_week")
-        csv_text = st.text_area(
-            "Paste CSV here", height=200, key="imp_csv",
-            placeholder="player,market,line,over_odds,under_odds\n"
-                        "Ja'Marr Chase,receiving_yards,74.5,-115,-105\n"
-                        "...")
-        def _clear_imp_csv():
-            st.session_state["imp_csv"] = ""
-
-        st.button("🧹 Clear paste box", key="imp_clear_btn",
-                  on_click=_clear_imp_csv)
-        if st.button("📥 Import", type="primary", key="imp_btn"):
-            if not csv_text.strip():
-                st.warning("Paste some CSV first.")
-            else:
-                import io, csv as _csv
-                try:
-                    reader = _csv.DictReader(io.StringIO(csv_text.strip()))
-                    rows = [dict(r) for r in reader]
-                except Exception as e:
-                    rows = None
-                    st.error(f"Couldn't parse CSV: {e}")
-                if rows is not None:
-                    if len(rows) == 0:
-                        st.warning("No data rows found (need a header row + at least one line).")
-                    else:
-                        result = db.import_lines(rows, imp_season, imp_week, st.session_state.user)
-                        # the lines table just changed, so every cached
-                        # read of it must miss on the next rerun
-                        app_cache.bump()
-                        st.session_state["import_result"] = {
-                            "imported": result["imported"],
-                            "season": imp_season, "week": imp_week,
-                            "by_market": result["by_market"],
-                            "bad_market": result["bad_market"],
-                        }
-                        st.cache_data.clear()
-                        st.rerun()
-
-# ============ EXPORT ============
-if IS_ADMIN:
-    with _tabs[7]:
-        st.subheader("📤 Export Line Movement")
-        st.caption("Pick games and markets, then download. Teams come from the "
-                   "model's projections, kickoff slots from the schedule.")
-
-        import game_export, lm_export
-
-        xc1, xc2 = st.columns(2)
-        with xc1:
-            x_seasons = receiving.available_seasons()
-            x_season = st.selectbox("Season", x_seasons,
-                                    index=len(x_seasons) - 1, key="x_season")
-        with xc2:
-            x_weeks = receiving.available_weeks(x_season)
-            x_week = st.selectbox("Week", x_weeks,
-                                  index=data_utils.default_week_index(
-                                      x_weeks, x_season),
-                                  key="x_week")
-
-        games = game_export.load_games(x_season, x_week)
-        if len(games) == 0:
-            st.warning("No schedule found for that week.")
-        else:
-            slots = [s for s in game_export.SLOT_ORDER if s in set(games["slot"])]
-            picked_slots = st.multiselect("Kickoff slots", slots, default=slots,
-                                          key="x_slots")
-            avail = games[games["slot"].isin(picked_slots)]
-            lab = {f"{r['matchup']}  ({r['slot']})": r["matchup"]
-                   for _, r in avail.iterrows()}
-            picked_labels = st.multiselect(
-                f"Games ({len(lab)} in these slots)", list(lab),
-                default=list(lab), key="x_games")
-            picked = [lab[l] for l in picked_labels]
-
-            x_markets = st.multiselect("Markets", list(MARKETS.keys()),
-                                       default=list(MARKETS.keys()),
-                                       key="x_markets")
-            inc_un = st.checkbox("Include players with no matched game",
-                                 value=False, key="x_unassigned")
-
-            frames, notes = {}, []
-            for mkt_name in x_markets:
-                mkt_key = MARKETS[mkt_name]
-                mv = app_cache.get_line_movement(x_season, x_week, mkt_key,
-                                                 st.session_state.user)
-                if len(mv) == 0:
-                    notes.append(f"{mkt_name}: no snapshots yet")
-                    continue
-                is_td = (mkt_key == "anytime_td")
-                lw = "Prob%" if is_td else "Line"
-                mv = mv.copy()
-                mv["abs_move"] = mv["line_move"].abs().fillna(0)
-                mv = mv.sort_values("abs_move", ascending=False)
-                g = pd.DataFrame({
-                    "Player": mv["player"],
-                    "Tier": mv["latest_tier"].fillna(""),
-                    "vs. Model": mv["toward_away"].fillna(""),
-                    "Proj": mv["raw_projection"],
-                    "Edge": mv["latest_edge"],
-                    "Side": mv["latest_side"].replace("", "—") if not is_td else "—",
-                    f"First {lw}": mv["first_line"],
-                    f"Latest {lw}": mv["latest_line"],
-                    "Move": mv["line_move"],
-                    "Line Captures": mv["snapshots"],
-                })
-                # rushing carries QB rushing players through a second model
-                extra = [qb_rushing] if mkt_key == "rushing" else []
-                tmap = game_export.team_map(x_season, x_week, mkt_key, MODULES,
-                                            db._norm_name, extra_modules=extra)
-                g, n_un, _ = game_export.attach_games(g, "Player", tmap, games,
-                                                      db._norm_name)
-                g = game_export.filter_games(g, picked, include_unassigned=inc_un)
-                if n_un:
-                    notes.append(f"{mkt_name}: {n_un} player(s) had no team match")
-                if len(g):
-                    frames[mkt_name] = g.reset_index(drop=True)
-
-            total = sum(len(v) for v in frames.values())
-            st.markdown(f"**{total} row(s)** across {len(frames)} market(s)")
-            for n in notes:
-                st.caption(n)
-
-            if frames:
-                for name, fr in frames.items():
-                    with st.expander(f"{name} ({len(fr)} rows)"):
-                        st.dataframe(fr, width='stretch', hide_index=True)
-
-                import io
-
-                def _x_excel(fs):
-                    bad = set(':\\/?*[]')
-                    buf = io.BytesIO()
-                    with pd.ExcelWriter(buf, engine="openpyxl") as xl:
-                        for nm, fr in fs.items():
-                            safe = "".join(c for c in str(nm) if c not in bad)[:31] or "Sheet"
-                            fr.to_excel(xl, sheet_name=safe, index=False)
-                    return buf.getvalue()
-
-                stamp = f"{x_season}_wk{x_week}"
-                d1, d2, d3 = st.columns(3)
-                with d1:
-                    st.download_button(
-                        "⬇️ Excel (all markets)", data=_x_excel(frames),
-                        file_name=f"opalscales_{stamp}.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        key="x_xlsx")
-                with d2:
-                    st.download_button(
-                        "🖼️ PNGs (all markets, zip)",
-                        data=lm_export.to_zip(frames, x_season, x_week),
-                        file_name=f"opalscales_pngs_{stamp}.zip",
-                        mime="application/zip", key="x_zip")
-                with d3:
-                    st.download_button(
-                        "📄 PDF (all markets)",
-                        data=lm_export.to_pdf(frames, x_season, x_week),
-                        file_name=f"opalscales_{stamp}.pdf",
-                        mime="application/pdf", key="x_pdf")
-
-                with st.expander("Single market PNG"):
-                    png_pick = st.selectbox("Market", list(frames), key="x_png_mkt")
-                    st.download_button(
-                        "🖼️ Download",
-                        data=lm_export.to_png(frames[png_pick], png_pick,
-                                              x_season, x_week),
-                        file_name=f"opalscales_{png_pick}_{stamp}.png".replace(" ", "_"),
-                        mime="image/png", key="x_png")
-
-            st.divider()
-            st.markdown("##### Bet tracker (paste into the spreadsheet)")
-
-            log = betlog.load_log(st.session_state.user)
-            if len(log) == 0:
-                st.caption("Nothing in the log yet.")
-            else:
-                # betlog saves EVERY board row, with `bet` marking the ones you
-                # actually placed. A units tracker only wants those; unbet rows
-                # would have no stake and would pollute ROI.
-                truthy = [True, "True", "true", 1, "1"]
-                bl = log[log["bet"].isin(truthy)].copy()
-
-                tc1, tc2 = st.columns(2)
-                with tc1:
-                    t_seasons = ["All"] + sorted(
-                        bl["season"].dropna().unique().tolist())
-                    t_season = st.selectbox("Season", t_seasons, key="trk_season")
-                with tc2:
-                    pool = bl if t_season == "All" else bl[bl["season"] == t_season]
-                    t_weeks = ["All"] + sorted(pool["week"].dropna().unique().tolist())
-                    t_week = st.selectbox("Week", t_weeks, key="trk_week")
-
-                sel = bl if t_season == "All" else bl[bl["season"] == t_season]
-                if t_week != "All":
-                    sel = sel[sel["week"] == t_week]
-
-                if len(sel) == 0:
-                    st.caption("No placed bets in that range.")
-                else:
-                    # Game date and matchup need the player's team, so a schedule
-                    # and a team map are required per (season, week) and market.
-                    gbw, tbk = {}, {}
-                    for (sn, wk) in sel[["season", "week"]].drop_duplicates().itertuples(index=False):
-                        try:
-                            gbw[(sn, wk)] = game_export.load_games(sn, wk)
-                        except Exception:
-                            gbw[(sn, wk)] = None
-                        for mk in sel[(sel["season"] == sn) & (sel["week"] == wk)]["market"].unique():
-                            if mk not in MODULES:
-                                continue
-                            extra = [qb_rushing] if mk == "rushing" else []
-                            try:
-                                tbk[(sn, wk, mk)] = game_export.team_map(
-                                    sn, wk, mk, MODULES, db._norm_name,
-                                    extra_modules=extra)
-                            except Exception:
-                                tbk[(sn, wk, mk)] = {}
-
-                    trk = game_export.tracker_rows(sel, gbw, tbk, db._norm_name)
-                    n_blank = int((trk["Game Date"].astype(str) == "").sum())
-                    st.markdown(f"**{len(trk)} placed bet(s)**")
-                    if n_blank:
-                        st.caption(f"{n_blank} row(s) had no team match, so no game "
-                                   "date. They sort to the bottom; fill those by hand.")
-                    st.dataframe(trk, width='stretch', hide_index=True)
-                    st.caption("Copy below, then paste into cell A4 of the Bets sheet. "
-                               "Columns A-N fill; enter Stake in column O.")
-                    st.code(trk.to_csv(index=False, header=False, sep="\t"),
-                            language=None)

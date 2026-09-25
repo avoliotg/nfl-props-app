@@ -92,6 +92,8 @@ NOTHING HERE PLACES A BET OR SIZES ONE
     rules even where it is out-of-sample within each test. Forward results
     are the only thing that settles them.
 """
+from functools import lru_cache
+
 import numpy as np
 import pandas as pd
 
@@ -159,8 +161,14 @@ def is_calibrated(market="receiving"):
                for k in ("shock_mean", "shock_sd", "dev_veto_at"))
 
 
+@lru_cache(maxsize=4)
 def _air_yards_history(seasons):
     """Per player-week air-yards shock, from lagged windows only.
+
+    CACHED, because the Line Movement tab evaluates rules once per market and
+    six uncached loads of five seasons of player stats would make that tab
+    slow in exactly the way the September 25 performance work just fixed. The
+    argument must therefore be a TUPLE, not a list.
 
     Windows do NOT overlap: base is shifted past the recent window, so the
     two regressors are not sharing observations. Minimums mirror
@@ -273,7 +281,7 @@ def evaluate(props, seasons=(2022, 2023, 2024, 2025, 2026)):
     else:
         cal = CALIBRATION["receiving"]
         try:
-            hist = _air_yards_history(seasons)
+            hist = _air_yards_history(tuple(seasons))
         except Exception as e:
             rr["reason"] = f"air-yards history unavailable: {type(e).__name__}: {e}"
         else:
