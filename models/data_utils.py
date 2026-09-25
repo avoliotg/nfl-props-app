@@ -185,9 +185,31 @@ def norm_join_name(s):
 
     Takes a pandas Series, returns a pandas Series.
     """
-    out = (s.astype(str)
+    import pandas as pd
+
+    # FORCE THE OBJECT DTYPE BEFORE ANY REGEX WORK. This is not cosmetic.
+    #
+    # pandas may back a string column with pyarrow, and when it does,
+    # .str.replace(regex=True) is executed by RE2 rather than by Python's
+    # re. The two engines do not accept the same syntax. RE2 rejects \uXXXX
+    # escapes outright, so a raw-string pattern that Python resolves happily
+    # raises ArrowInvalid: "invalid escape sequence: \u".
+    #
+    # That is exactly what broke the deployed app on September 25 while every
+    # local run passed: the local frame was object dtype and used re, the
+    # Streamlit Cloud frame was pyarrow-backed and used RE2. Converting here
+    # pins the engine to the one these patterns were written and tested
+    # against, and closes the whole class of divergence rather than the one
+    # escape that happened to surface.
+    out = pd.Series(s.astype(str).to_numpy(dtype=object), index=s.index)
+
+    out = (out
            .str.normalize("NFKD")
-           .str.replace(r"[\u0300-\u036f]", "", regex=True)
+           # NOT a raw string, deliberately. Python resolves these escapes so
+           # the engine receives the two literal combining characters rather
+           # than the six-character text "\u0300". A raw string here was the
+           # bug above.
+           .str.replace("[\u0300-\u036f]", "", regex=True)
            .str.replace(r"\s*\([^)]*\)", "", regex=True)
            .str.replace("[.'\u2019\u2018`,-]", "", regex=True)
            .str.replace(r"\s+", " ", regex=True)

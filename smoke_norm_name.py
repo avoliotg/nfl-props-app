@@ -91,12 +91,50 @@ def main():
         if once != tw:
             failures.append(f"  not idempotent: {once!r} -> {tw!r}")
 
+    # ---- THE ARROW BACKEND, which is what broke the deployed app ----
+    #
+    # pandas may back a string column with pyarrow, and when it does,
+    # .str.replace(regex=True) runs through RE2 instead of Python's re. RE2
+    # rejects \uXXXX escapes, so a raw-string pattern that Python resolves
+    # happily raises ArrowInvalid: "invalid escape sequence: \u".
+    #
+    # On September 25 every case above passed locally on an object-dtype
+    # column while the DEPLOYED app crashed on a pyarrow-backed one. So the
+    # object dtype alone is not a sufficient test, and this rig was the thing
+    # that should have caught it and did not.
+    #
+    # Skips when pyarrow is absent rather than failing, because a missing
+    # optional dependency is not a defect in the normalizer. Note the
+    # container this was written in had no pyarrow, which is exactly why the
+    # gap existed.
+    try:
+        import pyarrow  # noqa: F401
+        arrow_in = pd.Series([c[0] for c in CASES], dtype="string[pyarrow]")
+    except Exception as exc:
+        print(f"NOTE: pyarrow backend NOT exercised ({type(exc).__name__}). "
+              f"On a machine with pyarrow this rig also checks the RE2 path.")
+    else:
+        try:
+            arrow_got = data_utils.norm_join_name(arrow_in).tolist()
+        except Exception as exc:
+            failures.append(f"  pyarrow-backed input raised "
+                            f"{type(exc).__name__}: {exc}")
+            arrow_got = None
+        if arrow_got is not None:
+            for (raw, want, why), g in zip(CASES, arrow_got):
+                if g != want:
+                    failures.append(f"  [arrow] {raw!r} -> {g!r}, expected "
+                                    f"{want!r}  ({why})")
+            if arrow_got != got:
+                failures.append("  [arrow] output differs from the "
+                                "object-dtype output; the engines disagree")
+
     if failures:
         print(f"SMOKE FAIL ({len(failures)} of {len(CASES)} cases)")
         print("\n".join(failures))
         return 1
     print(f"SMOKE PASS: {len(CASES)} cases, accents folded, tags stripped, "
-          f"prior rules intact, idempotent")
+          f"prior rules intact, idempotent, arrow backend agrees")
     return 0
 
 
