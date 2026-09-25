@@ -371,6 +371,18 @@ with tab_board:
 
             def _row_edge(r):
                 if IS_PROB:
+                    # A probability market can declare its own verdict
+                    # unsafe. J1's reference-only path keys off BETA being
+                    # clipped to zero, and a probability market has no beta,
+                    # so without this there is nothing to stop the board
+                    # recommending Max on a miscalibrated row. anytime_td set
+                    # CALIBRATION_SUSPENDED on September 25 after three
+                    # defects were found inflating low-volume players.
+                    if getattr(module, "CALIBRATION_SUSPENDED", False):
+                        return pd.Series({"p_over": r["projection"],
+                                          "edge": None, "side": "",
+                                          "tier": "", "approx": False,
+                                          "reference_only": True})
                     # TD: model already outputs a probability; edge = model% - implied%
                     implied = module.american_to_prob(r["over_odds"])
                     if implied is None:
@@ -463,6 +475,7 @@ with tab_board:
                     f"**{n_lines}** lines entered · **reference only**, no edge "
                     f"shown for this market")
                 st.info(
+                    getattr(module, "SUSPENSION_REASON", None) or
                     "This market is shown for reference. Measured against "
                     "2023-2026 closing lines, the model adds nothing to the "
                     "line here: beta is statistically indistinguishable from "
