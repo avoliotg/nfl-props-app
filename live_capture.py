@@ -22,6 +22,14 @@ Environment variables take precedence over the secrets file:
 SECURITY NOTE: the repo is public, so GitHub Actions logs are world readable.
 Nothing here ever prints a key, a password, or a URL containing the key.
 
+SCHEMA REQUIREMENT as of 2026-09-28. Every row now carries commence_time, so
+the `lines` table must have that column before this script runs:
+
+    alter table lines add column commence_time timestamptz;
+
+Without it every insert in the run raises, insert_rows swallows the failure
+per batch, and the capture logs errors while writing nothing.
+
 Usage:
     python live_capture.py                      capture NFL now
     python live_capture.py --dry-run            show what would be pulled, 0 credits
@@ -145,13 +153,21 @@ class Api:
 
 # ---------------------------------------------------------------------- parse
 
-def parse_event(payload, sport, season, week, captured_at):
+def parse_event(payload, sport, season, week, captured_at, commence_time=None):
     """Flatten one event-odds payload into `lines` rows.
 
     Over and under for the same player are folded into one row, matching the
     schema the transcription workflow produced. anytime_td arrives as a single
     'Yes' outcome with no point, so line stays null and over_odds carries the
     price, which is how the app already stores it.
+
+    commence_time is stored on every row as of 2026-09-28 (plan item 6.10).
+    The API always supplies it and this function previously discarded it,
+    which left `lines` with no way to tell how long before kickoff a row was
+    priced. captured_at alone cannot answer that, because one snapshot spans
+    games that kick off hours apart: a Sunday 4pm capture holds finished 1pm
+    players, live 4:05 players and pregame Sunday night players at once.
+    With this column the distance to kickoff is a subtraction per row.
     """
     rows = []
     if not payload:
@@ -188,6 +204,7 @@ def parse_event(payload, sport, season, week, captured_at):
                     "over_odds": rec["over_odds"],
                     "under_odds": rec["under_odds"],
                     "captured_at": captured_at,
+                    "commence_time": commence_time,
                     "projection": None,
                     "edge": None,
                 })
@@ -295,8 +312,10 @@ def main():
         print("  no events returned")
         return
 
-    cutoff = datetime.now(timezone.utc) + timedelta(hours=args.hours_ahead)
+    now = datetime.now(timezone.utc)
+    cutoff = now + timedelta(hours=args.hours_ahead)
     keep = []
+    started = []
     for e in events:
         ct = e.get("commence_time")
         if not ct:
@@ -304,6 +323,36 @@ def main():
         try:
             t = datetime.fromisoformat(ct.replace("Z", "+00:00"))
         except ValueError:
+            continue
+        # TWO-SIDED as of 2026-09-28. This window had an upper bound and no
+        # lower bound. The /events endpoint returns games that have not
+        # FINISHED, which includes games in progress, so every event that had
+        # already kicked off satisfied `t <= cutoff` and got pulled at live
+        # in-game prices.
+        #
+        # Two harms, and the second is the one that matters:
+        #   1. The rule layer fires on a price nobody could have bet. The
+        #      rushing low-line under rule did exactly this on 2026-09-24.
+        #   2. Those rows enter `lines` indistinguishable from real closing
+        #      snapshots. An in-game line has partially absorbed the outcome
+        #      it is being scored against, which is the same failure family
+        #      as the carries >= 5 and attempts >= 10 eval filters that
+        #      produced two entirely spurious betas. It would flatter the
+        #      rushing rule rather than hurt it, so it would not announce
+        #      itself.
+        #
+        # This was never a scheduling problem. A perfectly punctual cron
+        # would do the same thing on the Sunday 17:23 ET slot every week,
+        # because that run exists to capture line movement and the 1pm games
+        # are in the fourth quarter when it fires.
+        #
+        # Skipping at the source rather than filtering at read time is
+        # deliberate: it makes the bad state unreachable instead of one
+        # forgotten filter away, and it saves the credits. If in-game prices
+        # are ever wanted as a research asset they belong in their own table
+        # with their own semantics, not mixed into the closing-line dataset.
+        if t <= now:
+            started.append(e)
             continue
         if t <= cutoff:
             keep.append(e)
@@ -313,6 +362,14 @@ def main():
           f"{args.hours_ahead}h")
     print(f"  {len(markets)} markets x 1 region = {per_event} credits per event")
     print(f"  estimated cost: {len(keep) * per_event} credits")
+
+    # Printed, not silent. A skip is a deliberate act and the Actions log is
+    # the only place anyone will see it.
+    if started:
+        print(f"\n  {len(started)} event(s) already kicked off, skipped:")
+        for e in started:
+            print(f"    {e['commence_time']}  {e.get('away_team')} at "
+                  f"{e.get('home_team')}")
 
     if args.dry_run:
         print("\n  events that would be pulled:")
@@ -338,6 +395,9 @@ def main():
     total = 0
     for n, e in enumerate(keep, 1):
         label = f"{e.get('away_team')} at {e.get('home_team')}"
+        # Bound here, not inside the week branch below, or it is undefined
+        # under --no-week and the row loses its commence_time.
+        ct = e.get("commence_time")
         try:
             payload = api.get(f"/sports/{sport}/events/{e['id']}/odds",
                               regions="us", oddsFormat="american",
@@ -351,12 +411,11 @@ def main():
 
         week = None
         if not args.no_week:
-            ct = e.get("commence_time")
             if ct not in week_cache:
                 week_cache[ct] = infer_week(sport, season, ct)
             week = week_cache[ct]
 
-        rows = parse_event(payload, sport, season, week, captured_at)
+        rows = parse_event(payload, sport, season, week, captured_at, ct)
         if not rows:
             print(f"  [{n}/{len(keep)}] {label}: 0 rows "
                   f"(props may not be posted yet)")
