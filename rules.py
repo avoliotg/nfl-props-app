@@ -231,13 +231,38 @@ def evaluate(props, seasons=(2022, 2023, 2024, 2025, 2026)):
     # it a quarterback's rushing prop would be tested against a rule measured
     # on running backs and receivers.
     try:
-        p, _ = data_utils.split_qb_rushing(p)
+        p, _split_rep = data_utils.split_qb_rushing(p)
     except Exception as e:
-        # Not fatal: if the caller already labelled qb_rushing, nothing is
-        # lost. Recorded so a silent mislabel cannot hide.
-        split_note = f"split_qb_rushing skipped: {type(e).__name__}: {e}"
+        # FAILS CLOSED as of 2026-09-28. This branch used to record the
+        # failure and carry on, on the reasoning that a caller who had
+        # already labelled qb_rushing loses nothing. app.py is not that
+        # caller. app.py:979 calls evaluate(_props) and app.py never calls
+        # split_qb_rushing, so on a split failure the rushing filter below
+        # ran over a frame that still contained quarterbacks. Every QB
+        # rushing line is below RUSHING_MAX_LINE by construction, so the
+        # failure mode was not a few stray rows: it was every quarterback on
+        # the board firing rule 1 at once, on a market the rule was never
+        # validated against.
+        split_ok = False
+        split_note = f"split_qb_rushing FAILED: {type(e).__name__}: {e}"
     else:
+        split_ok = True
         split_note = "split_qb_rushing applied"
+        # min_match_rate is deliberately NOT set here. Every other call site
+        # in the repo passes 0.98, but those are research scripts over
+        # historical rows, where refusing to run on a degraded dataset is
+        # correct. This is the live path: if real boards match below the
+        # threshold the split would raise on every evaluation and rule 1
+        # would never fire again, which trades a rare wrong firing for
+        # permanent silence. So the rate is surfaced instead of enforced,
+        # and qb_split_report.py settles whether a threshold is safe.
+        try:
+            for _k, _v in (_split_rep or {}).items():
+                if "rate" in str(_k).lower() and isinstance(_v, (int, float)):
+                    split_note += f" ({_k}={float(_v):.4f})"
+                    break
+        except Exception:
+            pass
 
     p["_key"] = data_utils.norm_join_name(p["player"])
     p["week"] = pd.to_numeric(p["week"], errors="coerce").astype("Int64")
@@ -247,14 +272,25 @@ def evaluate(props, seasons=(2022, 2023, 2024, 2025, 2026)):
     report = {"props_in": int(len(props)), "split": split_note, "rules": {}}
 
     # ---- RULE 1: rushing low-line under ----
+    # Shaped like rule 2 below: build the report dict, decide whether the
+    # rule may run, then fire. The earlier version built the report and
+    # fired in one statement and had no path that declined to fire.
     r = p[(p["market"] == "rushing") & p["line"].notna()]
     hit = r[r["line"] <= RUSHING_MAX_LINE]
-    report["rules"]["rushing_low_line_under"] = {
-        "eligible": int(len(r)),
-        "fired": int(len(hit)),
-        "reason": (f"line <= {RUSHING_MAX_LINE}"
-                   if len(r) else "no rushing props with a line"),
-    }
+    r1 = {"eligible": int(len(r))}
+    if not split_ok:
+        # Without the split, `rushing` still contains quarterbacks. Firing
+        # here would apply a rule measured on running backs and receivers to
+        # a market it was never tested on, so it fires nothing and says why.
+        r1["reason"] = ("NOT RUN. quarterbacks may still be labelled "
+                        "`rushing`. " + split_note)
+        hit = hit.iloc[0:0]
+    elif not len(r):
+        r1["reason"] = "no rushing props with a line"
+    else:
+        r1["reason"] = f"line <= {RUSHING_MAX_LINE}"
+    r1["fired"] = int(len(hit))
+    report["rules"]["rushing_low_line_under"] = r1
     for _, row in hit.iterrows():
         out.append({"rule": "rushing_low_line_under", "market": "rushing",
                     "player": row["player"], "line": row["line"],

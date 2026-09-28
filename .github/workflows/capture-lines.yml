@@ -22,6 +22,26 @@ on:
     # Prime time closes. 23:23 UTC is 7:23pm ET, about 52 minutes before an
     # 8:15pm kickoff. Thursday, Sunday and Monday.
     - cron: "23 23 * * 0,1,4"
+    #
+    # International closes. 12:23 UTC is 8:23am ET, about 67 minutes before a
+    # 9:30am ET kickoff, which is when the London and other overseas games go
+    # off. Added 2026-09-28.
+    #
+    # WHY THIS IS NEEDED, and only until November 1. A 9:30am ET kickoff is
+    # 13:30 UTC while Eastern is UTC-4, so the base grid's 13:23 entry fires
+    # SEVEN MINUTES before kickoff. That is useless two ways: it is inside the
+    # 20-to-90-minute window the historical closing-line instrument uses, and
+    # now that live_capture.py skips events that have already started, any
+    # scheduler drift past seven minutes means the game is skipped entirely
+    # and gets no closing snapshot at all. Observed weekend drift on these
+    # runs has been 24 to 154 minutes, so a skip was the likely outcome.
+    #
+    # After November 1 Eastern is UTC-5, a 9:30am ET kickoff becomes 14:30
+    # UTC, and the base grid's 13:23 entry lands 67 minutes out on its own.
+    # This entry then fires about 2 hours out instead, which is harmless: it
+    # just becomes another movement snapshot. Removable at that point, but
+    # there is no cost to leaving it.
+    - cron: "23 12 * * 0"
 
 # Off-the-hour minutes are deliberate. Scheduled Actions runs are best effort
 # and the top of the hour is the most congested slot, so :23 reduces drift.
