@@ -14,10 +14,35 @@ on:
     # Base movement grid: every 4 hours, every day.
     - cron: "23 1,5,9,13,17,21 * * *"
     #
-    # Sunday afternoon closes. 16:23 UTC is 12:23pm ET, about 37 minutes before
-    # the 1pm window. 19:23 UTC is 3:23pm ET, about 42 minutes before 4:05 and
-    # 62 before 4:25.
-    - cron: "23 16,19 * * 0"
+    # Sunday afternoon closes. RETIMED 2026-09-28. One entry per kickoff
+    # cluster, each placed at the EARLY edge of the 20-to-90-minute window
+    # rather than the middle.
+    #
+    # WHY. Scheduled Actions runs drift late and never early, so a nominal
+    # time in the middle of the window spends half its slack before the run
+    # even happens. The old pair was 16:23 and 19:23 UTC, at 37 and 42
+    # minutes before their kickoffs, which tolerated 17 and 22 minutes of
+    # drift. Observed drift on 2026-09-27 was 12, 50 and 60 minutes on three
+    # separate runs, so the 19:23 entry fired 50 late at 20:13 UTC, eight
+    # minutes AFTER the 4:05 kickoff. Four of the five week 3 games with no
+    # closing snapshot were lost that way.
+    #
+    # Placed at the early edge instead, the same three kickoff clusters
+    # tolerate 60, 65 and 65 minutes:
+    #
+    #   15:40 UTC  11:40am ET   80 min before the 1pm slate
+    #   18:40 UTC   2:40pm ET   85 min before 4:05
+    #   19:00 UTC   3:00pm ET   85 min before 4:25
+    #
+    # Splitting 4:05 and 4:25 across two entries is the point. No single run
+    # can sit 85 minutes ahead of both, and one run covering both caps out
+    # at 45 minutes of tolerance.
+    #
+    # Drift beyond about an hour is not fixable by scheduling. It now costs
+    # a missing snapshot rather than a contaminated one, because
+    # live_capture.py skips events that have already started.
+    - cron: "40 15,18 * * 0"
+    - cron: "0 19 * * 0"
     #
     # Prime time closes. 23:23 UTC is 7:23pm ET, about 52 minutes before an
     # 8:15pm kickoff. Thursday, Sunday and Monday.

@@ -70,6 +70,16 @@ MARKET_TO_APP = {
     "player_shots_on_goal": "shots_on_goal",
 }
 
+# Outcome descriptions that are not people. The books express the
+# no-touchdown-scorer side of anytime_td this way, and parse_event used to
+# file it as a player.
+NON_PLAYER_OUTCOMES = {
+    "no scorer",
+    "no touchdown scorer",
+    "no td scorer",
+    "none",
+}
+
 TABLE = "lines"
 
 
@@ -182,6 +192,13 @@ def parse_event(payload, sport, season, week, captured_at, commence_time=None):
             for o in mkt.get("outcomes", []) or []:
                 player = o.get("description")
                 if not player:
+                    continue
+                # anytime_td carries a no-touchdown-scorer outcome whose
+                # description is not a person. It was being stored as a
+                # player: 489 such rows in the automated era. It can never
+                # join to player stats, so it inflated the unmatched count
+                # and would sit in `lines` as a permanent phantom player.
+                if player.strip().lower() in NON_PLAYER_OUTCOMES:
                     continue
                 side = str(o.get("name", "")).lower()
                 rec = per_player.setdefault(
