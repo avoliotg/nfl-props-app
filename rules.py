@@ -231,7 +231,8 @@ def evaluate(props, seasons=(2022, 2023, 2024, 2025, 2026)):
     # it a quarterback's rushing prop would be tested against a rule measured
     # on running backs and receivers.
     try:
-        p, _split_rep = data_utils.split_qb_rushing(p)
+        p, _split_rep = data_utils.split_qb_rushing(
+            p, min_match_rate=0.98)
     except Exception as e:
         # FAILS CLOSED as of 2026-09-28. This branch used to record the
         # failure and carry on, on the reasoning that a caller who had
@@ -248,14 +249,31 @@ def evaluate(props, seasons=(2022, 2023, 2024, 2025, 2026)):
     else:
         split_ok = True
         split_note = "split_qb_rushing applied"
-        # min_match_rate is deliberately NOT set here. Every other call site
-        # in the repo passes 0.98, but those are research scripts over
-        # historical rows, where refusing to run on a degraded dataset is
-        # correct. This is the live path: if real boards match below the
-        # threshold the split would raise on every evaluation and rule 1
-        # would never fire again, which trades a rare wrong firing for
-        # permanent silence. So the rate is surfaced instead of enforced,
-        # and qb_split_report.py settles whether a threshold is safe.
+        # min_match_rate=0.98 is set on the call above, matching every other
+        # call site in the repo. An earlier version of this comment argued
+        # for leaving it unset on the live path, on the grounds that a
+        # threshold could raise on real boards and silence rule 1
+        # permanently. That reasoning was wrong in both directions.
+        #
+        # It is wrong on the risk. Measured on the population the threshold
+        # actually governs, 9,300 automated-era rushing rows across 7 books,
+        # match_rate is 1.0000 with zero unmatched, and the 65 players left
+        # labelled `rushing` are all running backs. On 33,885 historical
+        # rows it is 0.9998, and all the unmatched names were abbreviated
+        # screenshot-era forms that the live feed does not produce.
+        #
+        # It is wrong on the need, which matters more. The fail-closed
+        # branch above catches an EXCEPTION. It cannot catch silent
+        # degradation: if the position map loads empty rather than raising,
+        # split_qb_rushing returns normally with match_rate 0.0, split_ok
+        # stays True, split_note reads "applied", and rule 1 fires on every
+        # quarterback on the board. min_match_rate is the only thing that
+        # converts that state into an exception the branch can handle. The
+        # threshold and the fail-closed branch are one mechanism, not two.
+        #
+        # The rate is still surfaced below, because a rate of 0.99 with a
+        # starting quarterback in the residue is worse than 0.95 with only
+        # depth tight ends in it, and the gate cannot tell the difference.
         try:
             for _k, _v in (_split_rep or {}).items():
                 if "rate" in str(_k).lower() and isinstance(_v, (int, float)):
