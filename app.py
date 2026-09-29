@@ -1035,6 +1035,74 @@ with tab_movement:
                     .dt.tz_convert("America/New_York")
                     .dt.strftime("%m/%d %I:%M%p").fillna("—"))
 
+        # MOVEMENT COLUMNS. Absent for anytime_td, which has no under side
+        # and therefore no two-sided devigged price, so they are filled with
+        # None and app.py's existing all-empty column drop removes them for
+        # that market without a special case.
+        for _c in ("price_move", "n_books_window", "window_hours",
+                   "bars_line", "bars_price", "move_dominant",
+                   "clip_line", "clip_price"):
+            if _c not in mv.columns:
+                mv[_c] = None
+
+        # Which channel the bars show is a property of the MARKET, identical
+        # on every row, so it is read once. Chosen from the data in
+        # movement.py rather than hardcoded: a bar group built on the idle
+        # channel would render as unanimous stillness.
+        _dom_vals = mv["move_dominant"].dropna()
+        _dom = _dom_vals.iloc[0] if len(_dom_vals) else None
+        _barcol = "bars_line" if _dom == "line" else "bars_price"
+        _clipcol = "clip_line" if _dom == "line" else "clip_price"
+        mv["bars_dom"] = mv[_barcol]
+
+        # BOOK AGREEMENT AS TEXT. Neither BarChartColumn nor
+        # LineChartColumn renders in st.data_editor for a newly added
+        # column, so the per-book group is summarised instead of drawn.
+        # n_up and n_down are already computed on the dominant channel.
+        _upc = "n_up_line" if _dom == "line" else "n_up_price"
+        _dnc = "n_down_line" if _dom == "line" else "n_down_price"
+        for _c in (_upc, _dnc):
+            if _c not in mv.columns:
+                mv[_c] = None
+
+        # SPREAD ACROSS BOOKS, at each end of the window. This replaced a
+        # direction count, which could not distinguish two books converging
+        # on one number from two books moving apart: both read "1 up 1 dn".
+        # Narrowing is convergence, widening is disagreement.
+        for _c in ("spread_then", "spread_now"):
+            if _c not in mv.columns:
+                mv[_c] = None
+
+        def _spreadtxt(row):
+            a, z = row.get("spread_then"), row.get("spread_now")
+            if a is None or z is None or pd.isna(a) or pd.isna(z):
+                return ""          # unknown, not zero: no path at any book
+            if abs(float(a) - float(z)) < 1e-9:
+                return "%g" % float(z)
+            return "%g > %g" % (float(a), float(z))
+
+        mv["spread_txt"] = mv.apply(_spreadtxt, axis=1)
+
+        # PRICE, DEADBANDED FOR DISPLAY. movement.py treats a price move at
+        # or under the deadband as no move, so showing three decimals of it
+        # invites reading noise as signal.
+        _pband_vals = pd.to_numeric(mv.get("price_deadband"),
+                                    errors="coerce").dropna() \
+            if "price_deadband" in mv.columns else []
+        _pband = float(_pband_vals.iloc[0]) if len(_pband_vals) else 0.010
+
+        def _pricetxt(v):
+            if v is None or pd.isna(v):
+                return ""
+            return "flat" if abs(float(v)) <= _pband else "%+.1f" % (100.0 * v)
+
+        mv["price_txt"] = mv["price_move"].map(_pricetxt)
+        _clip_vals = pd.to_numeric(mv[_clipcol], errors="coerce").dropna()
+        _clip = float(_clip_vals.iloc[0]) if len(_clip_vals) else None
+        _order_vals = mv["book_order"].dropna() if "book_order" in mv.columns \
+            else []
+        _order = list(_order_vals.iloc[0]) if len(_order_vals) else []
+
         grid = pd.DataFrame({
             "Player": mv["player"],
             "Game": mv["Game"],
@@ -1043,16 +1111,22 @@ with tab_movement:
             "Proj": mv["raw_projection"],
             "Edge": mv["latest_edge"],
             "Side": mv["latest_side"].replace("", "—") if not is_td else "—",
-            f"First {line_word}": mv["first_line"],
             f"Latest {line_word}": mv["latest_line"],
             "Move": mv["line_move"],
+            "Price": mv["price_txt"],
+            "Books": mv["n_books_window"],
+            "Spread": mv["spread_txt"],
+            "Since": mv["window_hours"],
             "Line Captures": mv["snapshots"],
             "Trend": mv["series"],
             "Captured": cap_disp,
             "Rule": mv["player"].map(lambda p: rule_side.get(str(p), "")),
             "Bet?": False,
         })
-        for numcol in ["Proj", "Edge", f"First {line_word}", f"Latest {line_word}", "Move"]:
+        # Price is now TEXT, because it carries "flat" below the deadband,
+        # so it is not coerced here.
+        for numcol in ["Proj", "Edge", f"Latest {line_word}", "Move",
+                       "Books", "Since"]:
             grid[numcol] = pd.to_numeric(grid[numcol], errors="coerce").astype("float64")
 
         # Drop the MODEL columns when this market has nothing to put in
@@ -1069,6 +1143,23 @@ with tab_movement:
                                                              "nan"}:
                 grid = grid.drop(columns=[_c])
 
+        # The bars have no axis of their own, so the book order and the
+        # shared scale are stated here. Without this the group is decorative.
+        if _dom:
+            _unit = line_word.lower() if _dom == "line" else "probability"
+            # book_used is a LOCAL in db.get_line_movement and was never a
+            # name here. The value does arrive: get_line_movement writes it
+            # onto every row as the `book` column. Null when _select_book
+            # found no rows for the default book.
+            _bk_vals = (mv["book"].dropna() if "book" in mv.columns else [])
+            _bk = str(_bk_vals.iloc[0]) if len(_bk_vals) else "the default book"
+            st.caption(
+                "Move is the %s at %s. Price is the devigged probability in "
+                "points, across %d books, flat below %.1f. Spread is the "
+                "range across books, start of window then end: narrowing "
+                "means they converged, widening means they disagreed."
+                % (line_word.lower(), _bk, len(_order), 100.0 * _pband))
+
         edited = st.data_editor(
             grid, width='stretch', hide_index=True,
             disabled=[c for c in grid.columns if c != "Bet?"],
@@ -1080,9 +1171,12 @@ with tab_movement:
                 "Edge": st.column_config.NumberColumn("Edge", format="%+.1f", width="small"),
                 "Side": st.column_config.TextColumn("Side", width="small"),
                 "Trend": st.column_config.LineChartColumn(f"{line_word} Trend", width="small"),
-                f"First {line_word}": st.column_config.NumberColumn(f"First {line_word}", format="%.1f", width="small"),
                 f"Latest {line_word}": st.column_config.NumberColumn(f"Latest {line_word}", format="%.1f", width="small"),
                 "Move": st.column_config.NumberColumn("Move", format="%+.1f", width="small"),
+                "Price": st.column_config.TextColumn("Price", width="small"),
+                "Books": st.column_config.NumberColumn("Books", format="%d", width="small"),
+                "Spread": st.column_config.TextColumn("Spread", width="small"),
+                "Since": st.column_config.NumberColumn("Since", format="%.0fh", width="small"),
                 "vs. Model": st.column_config.TextColumn("vs. Model", width="small"),
                 "Line Captures": st.column_config.NumberColumn("Line Captures", format="%d", width="small"),
                 "Captured": st.column_config.TextColumn("Captured", width="small"),
@@ -1090,8 +1184,43 @@ with tab_movement:
             },
             key=f"movement_editor_{mkt_label}")
 
+        # BOOK BY BOOK. The levels are what a reader actually wants and
+        # they will not fit in a cell, so they get a table of their own.
+        # In an expander because five markets would otherwise stack five of
+        # these at full height.
+        if _order and "levels_now" in mv.columns:
+            _lv = mv[["player", "levels_then", "levels_now"]].copy()
+            _lv = _lv[_lv["levels_now"].notna()]
+            if len(_lv):
+                _bb = {"Player": _lv["player"].tolist()}
+                for _i, _bname in enumerate(_order):
+                    _cells = []
+                    for _t, _n in zip(_lv["levels_then"], _lv["levels_now"]):
+                        _a = _t[_i] if _t is not None and _i < len(_t) else None
+                        _z = _n[_i] if _n is not None and _i < len(_n) else None
+                        if _z is None:
+                            _cells.append("")
+                        elif _a is None or abs(float(_a) - float(_z)) < 1e-9:
+                            _cells.append("%g" % float(_z))
+                        else:
+                            _cells.append("%g > %g" % (float(_a), float(_z)))
+                    _bb[_bname] = _cells
+                with st.expander(f"Book by book: {mkt_key} lines"):
+                    st.caption(
+                        "Start of window then end. A single number means "
+                        "that book did not move. Blank means it had no "
+                        "price in this window. Some books post ALT lines "
+                        "in the same field as main lines, so a column far "
+                        "from the others is a different product rather "
+                        "than an error.")
+                    st.dataframe(pd.DataFrame(_bb), width='stretch',
+                                 hide_index=True)
+
         with st.expander(f"📋 Copy {mkt_key} as text"):
-            copy_df = grid.drop(columns=["Trend", "Bet?"])
+            # By Book holds a list per cell, which has no text form.
+            # Agree is text and copies fine; only Trend holds a list.
+            copy_df = grid.drop(columns=[c for c in ("Trend", "Bet?")
+                                         if c in grid.columns])
             fmt = st.radio("Format", ["Markdown (Reddit)", "TSV (Sheets/Excel)"],
                            horizontal=True, key=f"copy_fmt_{mkt_label}")
             if fmt.startswith("Markdown"):

@@ -102,11 +102,19 @@ MIN_BOOKS_FOR_MINORITY = 4
 # rounding artifact rather than a move.
 LINE_DEADBAND = 0.25
 
-# The price deadband scales to the market's own median absolute move, since
-# books quantise odds and a four-four split at plus or minus 0.001 is
-# rounding rather than disagreement.
-PRICE_DEADBAND_FRAC = 0.25
-PRICE_DEADBAND_FLOOR = 0.002
+# The price deadband is FIXED, not scaled to the market's own spread.
+#
+# It was scaled at first, at 0.25 times the median absolute price move with a
+# 0.002 floor, and that is self-defeating: a market that barely uses its
+# price channel has a tiny median move, so the threshold shrinks until noise
+# clears it. On receiving, where the median absolute price move is 0.0042
+# and the LINE moves on 70 percent of paths, the scaled band made almost
+# every book count as having moved on price and the dominant channel came
+# out as "price" on a board where DK Metcalf's line had moved four yards.
+#
+# 0.010 of devigged probability is about two cents of American odds near an
+# even price, which is the smallest move a book makes deliberately.
+PRICE_DEADBAND = 0.010
 
 
 def american_to_decimal(o):
@@ -191,6 +199,7 @@ def per_book_movement(df, market=None, book_order=None):
         anchor = firsts.iloc[k]
 
         dl, dp, spans = {}, {}, []
+        lv0, lv1 = {}, {}
         for bk, bg in grp.groupby("book"):
             bg = bg.sort_values("captured_at")
             before = bg[bg["captured_at"] <= anchor]
@@ -199,29 +208,38 @@ def per_book_movement(df, market=None, book_order=None):
                 continue
             s_row, e_row = before.iloc[-1], after.iloc[-1]
             dl[bk] = float(e_row["line"]) - float(s_row["line"])
+            # LEVELS, not just the delta. A direction count cannot tell
+            # convergence from conflict: FanDuel 71.5 -> 72.5 against
+            # DraftKings 73.5 -> 72.5 is two books AGREEING on 72.5 from
+            # opposite sides, and FanDuel 71.5 -> 72.5 against DraftKings
+            # 72.5 -> 69.5 is real disagreement, yet both read as
+            # "1 up 1 dn". The spread between books, before and after,
+            # separates them.
+            lv0[bk] = float(s_row["line"])
+            lv1[bk] = float(e_row["line"])
             if np.isfinite(s_row["p_over"]) and np.isfinite(e_row["p_over"]):
                 dp[bk] = float(e_row["p_over"]) - float(s_row["p_over"])
             spans.append((e_row["captured_at"]
                           - s_row["captured_at"]).total_seconds())
         if dl:
-            raw[grp["player"].iloc[0]] = (dl, dp, spans)
+            raw[grp["player"].iloc[0]] = (dl, dp, spans, lv0, lv1)
 
     if not raw:
         return pd.DataFrame(), order, info
 
     # Pass two: deadbands, clips and the dominant channel are properties of
     # the whole market, so they need every prop before any row is finalised.
-    all_dl = np.abs(np.array([v for dl, _, _ in raw.values()
+    all_dl = np.abs(np.array([v for dl, _, _, _, _ in raw.values()
                               for v in dl.values()], dtype=float))
-    all_dp = np.abs(np.array([v for _, dp, _ in raw.values()
+    all_dp = np.abs(np.array([v for _, dp, _, _, _ in raw.values()
                               for v in dp.values()], dtype=float))
 
-    p_band = PRICE_DEADBAND_FLOOR
-    if len(all_dp):
-        med = float(np.nanmedian(all_dp))
-        if np.isfinite(med):
-            p_band = max(PRICE_DEADBAND_FLOOR, PRICE_DEADBAND_FRAC * med)
+    p_band = PRICE_DEADBAND
 
+    # Share of book-paths that cleared each channel's FIXED threshold. Both
+    # thresholds are absolute, so the two fractions are comparable; with a
+    # self-scaling band they were not, because each channel's threshold moved
+    # with its own noise.
     frac_line = float((all_dl > LINE_DEADBAND).mean()) if len(all_dl) else 0.0
     frac_price = float((all_dp > p_band).mean()) if len(all_dp) else 0.0
     # DOMINANT CHANNEL, chosen from the data rather than hardcoded per
@@ -246,7 +264,7 @@ def per_book_movement(df, market=None, book_order=None):
         return int((q > 0).sum()), int((q < 0).sum())
 
     out = []
-    for player, (dl, dp, spans) in raw.items():
+    for player, (dl, dp, spans, lv0, lv1) in raw.items():
         up_l, dn_l = split(dl.values(), LINE_DEADBAND)
         up_p, dn_p = split(dp.values(), p_band) if dp else (0, 0)
         moved_l, moved_p = up_l + dn_l, up_p + dn_p
@@ -266,10 +284,31 @@ def per_book_movement(df, market=None, book_order=None):
                                if moved >= MIN_BOOKS_FOR_MINORITY
                                else np.nan),
             "window_hours": (max(spans) / 3600.0) if spans else np.nan,
+            # Spread ACROSS books at each end of the window. Narrowing is
+            # the books converging; widening is them disagreeing.
+            "spread_then": (max(lv0.values()) - min(lv0.values())
+                            if lv0 else np.nan),
+            "spread_now": (max(lv1.values()) - min(lv1.values())
+                           if lv1 else np.nan),
+            # Per-book levels, aligned to book_order, for a detail table.
+            # None for a book that did not participate, never a number.
+            "levels_then": [lv0.get(b) for b in order],
+            "levels_now": [lv1.get(b) for b in order],
+            # ABSENT BOOKS ARE None, NOT NaN. The position must be held so
+            # the Nth bar is always the same book, but NaN is not JSON
+            # serialisable, and Streamlit's chart columns fall back to
+            # rendering the raw list as TEXT when a cell will not convert.
+            # That is what produced cells reading ",-0.0101245401672866":
+            # a leading empty slot followed by stringified floats. None
+            # serialises as null and leaves a gap.
+            #
+            # Not 0.0: a zero bar is indistinguishable from a book that
+            # participated and did not move, and that distinction is the
+            # whole reason n_books_window is carried alongside.
             "bars_line": [float(np.clip(dl[b], -clip_line, clip_line))
-                          if b in dl else np.nan for b in order],
+                          if b in dl else None for b in order],
             "bars_price": [float(np.clip(dp[b], -clip_price, clip_price))
-                           if b in dp else np.nan for b in order],
+                           if b in dp else None for b in order],
         })
     return pd.DataFrame(out), order, info
 

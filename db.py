@@ -715,7 +715,9 @@ def get_line_movement(season, week, market, user, sport="NFL",
                         n_moved_price=None, n_up_price=None,
                         n_down_price=None,
                         minority_share=None, window_hours=None,
-                        bars_line=None, bars_price=None)
+                        bars_line=None, bars_price=None,
+                        spread_then=None, spread_now=None,
+                        levels_then=None, levels_now=None)
         # mv_line_move, not line_move: the existing line_move on this row is
         # FanDuel only, first capture to last. This one is per-book and
         # window-anchored. Two columns with one name meaning two things is
@@ -733,7 +735,11 @@ def get_line_movement(season, week, market, user, sport="NFL",
                     minority_share=r["minority_share"],
                     window_hours=r["window_hours"],
                     bars_line=r["bars_line"],
-                    bars_price=r["bars_price"])
+                    bars_price=r["bars_price"],
+                    spread_then=r["spread_then"],
+                    spread_now=r["spread_now"],
+                    levels_then=r["levels_then"],
+                    levels_now=r["levels_now"])
 
     def _side(row):
         return _model_side(market, row.get("projection"), row.get("line"))
