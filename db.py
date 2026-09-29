@@ -673,19 +673,20 @@ def get_line_movement(season, week, market, user, sport="NFL",
     # devigged price to difference. That leaves these columns empty for that
     # market, which app.py's existing all-empty column drop then removes
     # without needing a special case.
-    mv_rows, mv_order = {}, []
+    mv_rows, mv_order, mv_info = {}, [], {}
     if not is_td:
         try:
             import movement as _movement
             _src = df_all_books.copy()
             _src["player"] = _src["player"].apply(_norm_name)
-            _res, mv_order = _movement.per_book_movement(_src)
+            _res, mv_order, mv_info = _movement.per_book_movement(
+                _src, market)
             if not _res.empty:
                 mv_rows = {r["player"]: r for _, r in _res.iterrows()}
         except Exception as e:
             _warn(f"Per-book price movement unavailable for {market} "
                   f"wk{week}: {type(e).__name__}: {e}")
-            mv_rows, mv_order = {}, []
+            mv_rows, mv_order, mv_info = {}, [], {}
 
     def _mv(pname):
         """Movement keys for one player. Absent is None, never zero.
@@ -695,18 +696,44 @@ def get_line_movement(season, week, market, user, sport="NFL",
         render alike.
         """
         r = mv_rows.get(pname)
+        # Market-level facts, identical on every row of this market. The
+        # display needs them to label its own scale and to choose which bar
+        # group to render, rather than assuming either.
+        base = {"book_order": mv_order,
+                "move_dominant": mv_info.get("dominant"),
+                "clip_line": mv_info.get("clip_line"),
+                "clip_price": mv_info.get("clip_price"),
+                "line_deadband": mv_info.get("line_deadband"),
+                "price_deadband": mv_info.get("price_deadband")}
         if r is None:
-            return {"price_move": None, "n_books_window": None,
-                    "n_moved": None, "minority_share": None,
-                    "window_hours": None, "bars": None,
-                    "book_order": mv_order}
-        return {"price_move": r["price_move"],
-                "n_books_window": int(r["n_books_window"]),
-                "n_moved": int(r["n_moved"]),
-                "minority_share": r["minority_share"],
-                "window_hours": r["window_hours"],
-                "bars": r["bars"],
-                "book_order": mv_order}
+            # ABSENT IS None, NEVER ZERO. A player with one capture at every
+            # book, or with no two-sided price, has UNKNOWN movement rather
+            # than no movement, and the two must not render alike.
+            return dict(base, mv_line_move=None, price_move=None,
+                        n_books_window=None,
+                        n_moved_line=None, n_up_line=None, n_down_line=None,
+                        n_moved_price=None, n_up_price=None,
+                        n_down_price=None,
+                        minority_share=None, window_hours=None,
+                        bars_line=None, bars_price=None)
+        # mv_line_move, not line_move: the existing line_move on this row is
+        # FanDuel only, first capture to last. This one is per-book and
+        # window-anchored. Two columns with one name meaning two things is
+        # how a wrong number survives review.
+        return dict(base,
+                    mv_line_move=r["line_move"],
+                    price_move=r["price_move"],
+                    n_books_window=int(r["n_books_window"]),
+                    n_moved_line=int(r["n_moved_line"]),
+                    n_up_line=int(r["n_up_line"]),
+                    n_down_line=int(r["n_down_line"]),
+                    n_moved_price=int(r["n_moved_price"]),
+                    n_up_price=int(r["n_up_price"]),
+                    n_down_price=int(r["n_down_price"]),
+                    minority_share=r["minority_share"],
+                    window_hours=r["window_hours"],
+                    bars_line=r["bars_line"],
+                    bars_price=r["bars_price"])
 
     def _side(row):
         return _model_side(market, row.get("projection"), row.get("line"))
