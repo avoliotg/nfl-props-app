@@ -646,6 +646,9 @@ def get_line_movement(season, week, market, user, sport="NFL",
     if "projection" in df.columns:
         n_saved = int(df["projection"].notna().sum())
     df = _drop_saved_rows(df)
+    # Kept before _select_book reduces the frame to one book. Saved rows are
+    # already gone, so this is captured rows only, every book.
+    df_all_books = df
     df, n_books, book_used = _select_book(df, book)
 
     if df.empty:
@@ -656,6 +659,54 @@ def get_line_movement(season, week, market, user, sport="NFL",
 
     df["player_norm"] = df["player"].apply(_norm_name)
     is_td = (market == "anytime_td")
+
+    # PER-BOOK PRICE MOVEMENT. Measured in devigged two-sided probability
+    # rather than in the line, because receptions moves its line on 8.7
+    # percent of paths and its price on 82.5 percent: FanDuel moves reception
+    # prices through the ODDS, so line_move above is blind in the market
+    # where movement is largest.
+    #
+    # Keyed on player_norm so the lookup below matches the groupby key. One
+    # call for the whole market, not one per player.
+    #
+    # anytime_td is skipped: it has no under side, so there is no two-sided
+    # devigged price to difference. That leaves these columns empty for that
+    # market, which app.py's existing all-empty column drop then removes
+    # without needing a special case.
+    mv_rows, mv_order = {}, []
+    if not is_td:
+        try:
+            import movement as _movement
+            _src = df_all_books.copy()
+            _src["player"] = _src["player"].apply(_norm_name)
+            _res, mv_order = _movement.per_book_movement(_src)
+            if not _res.empty:
+                mv_rows = {r["player"]: r for _, r in _res.iterrows()}
+        except Exception as e:
+            _warn(f"Per-book price movement unavailable for {market} "
+                  f"wk{week}: {type(e).__name__}: {e}")
+            mv_rows, mv_order = {}, []
+
+    def _mv(pname):
+        """Movement keys for one player. Absent is None, never zero.
+
+        A player with one capture at every book, or with no two-sided price,
+        has UNKNOWN movement rather than no movement, and the two must not
+        render alike.
+        """
+        r = mv_rows.get(pname)
+        if r is None:
+            return {"price_move": None, "n_books_window": None,
+                    "n_moved": None, "minority_share": None,
+                    "window_hours": None, "bars": None,
+                    "book_order": mv_order}
+        return {"price_move": r["price_move"],
+                "n_books_window": int(r["n_books_window"]),
+                "n_moved": int(r["n_moved"]),
+                "minority_share": r["minority_share"],
+                "window_hours": r["window_hours"],
+                "bars": r["bars"],
+                "book_order": mv_order}
 
     def _side(row):
         return _model_side(market, row.get("projection"), row.get("line"))
@@ -716,6 +767,7 @@ def get_line_movement(season, week, market, user, sport="NFL",
                 "p_over": None,
                 "series": td_series,
                 "n_books": n_books, "book": book_used,
+                **_mv(pname),
             })
         else:
             first_side = _side(first)
@@ -738,6 +790,7 @@ def get_line_movement(season, week, market, user, sport="NFL",
                 "p_over": compute_p_over(market, last.get("projection"), last.get("line")),
                 "series": line_series,
                 "n_books": n_books, "book": book_used,
+                **_mv(pname),
             })
     return pd.DataFrame(out)
 

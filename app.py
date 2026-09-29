@@ -934,14 +934,26 @@ with tab_movement:
     else:
         lm_slot_opts = [s for s in game_export.SLOT_ORDER
                         if s in set(lm_games["slot"])]
-        lm_slots = st.multiselect("Kickoff slots", lm_slot_opts,
-                                  default=lm_slot_opts, key="lm_slots")
+        # KEY IS WEEK-SCOPED. A keyed widget's stored value beats its
+        # `default` on every rerun, so a fixed key carries one week's slot
+        # selection into the next. This one fails before the game picker
+        # even runs: line 939 filters lm_games by these slots, so a stale
+        # selection shrinks the game list that the picker is built from.
+        lm_slots = st.multiselect(
+            "Kickoff slots", lm_slot_opts, default=lm_slot_opts,
+            key=f"lm_slots_{lm_season}_{lm_week}")
         lm_avail = lm_games[lm_games["slot"].isin(lm_slots)]
         lm_lab = {f"{r['matchup']}  ({r['slot']})": r["matchup"]
                   for _, r in lm_avail.iterrows()}
+        # KEY IS WEEK-SCOPED, for the reason above. With a fixed key,
+        # switching from week 3 to week 4 kept week 3's matchup labels,
+        # none of which exist in week 4, so filter_games dropped every row
+        # and every market rendered empty with no indication that the
+        # SELECTION was the problem rather than the data.
         lm_picked_labels = st.multiselect(
             f"Games ({len(lm_lab)} in these slots)", list(lm_lab),
-            default=list(lm_lab), key="lm_games_pick")
+            default=list(lm_lab),
+            key=f"lm_games_pick_{lm_season}_{lm_week}")
         lm_picked = [lm_lab[l] for l in lm_picked_labels]
         lm_filter_on = True
         st.caption("Filtering applies to every market below. Rows whose player "
@@ -1008,7 +1020,13 @@ with tab_movement:
                 mv, "player", tmap, lm_games, db._norm_name)
             mv = game_export.filter_games(mv, lm_picked, include_unassigned=False)
             if len(mv) == 0:
-                st.caption(f"No {mkt_key} rows in the selected games.")
+                # Say WHICH constraint emptied the table. "No rows" alone
+                # reads as missing data, and the usual cause is a selection
+                # that no longer matches the week.
+                st.caption(
+                    f"No {mkt_key} rows in the "
+                    f"{len(lm_picked)} of {len(lm_games)} selected games. "
+                    f"If that count looks wrong, reset the Games filter.")
                 continue
         else:
             mv["Game"] = ""

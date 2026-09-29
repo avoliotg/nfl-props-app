@@ -89,6 +89,18 @@ import eval_harness as eh
 PUBLISHED_FD_BETA = {
     "receptions": 0.226, "receiving": 0.066,
     "rushing": -0.043, "qb_passing": 0.085,
+    # ADDED 2026-09-28. FanDuel pooled all-season beta, from
+    # eval_harness --all-seasons --markets qb_rushing: +0.094 on 1,380 rows.
+    # v2 joins exactly 1,380 props for this market, so it is the same
+    # population rather than an approximation of one.
+    #
+    # WEAKER THAN THE OTHER FOUR, and worth saying so. Those were published
+    # before this script existed and so could not have been fitted to it.
+    # This one was measured on the day it was added. It is still a valid
+    # gate, because the gate exists to catch a wrong TRAINING POPULATION by
+    # comparison against a reference implementation and eval_harness is that
+    # reference, but it is not an independent prior figure.
+    "qb_rushing": 0.094,
 }
 GATE_TOL = 0.030
 
@@ -157,7 +169,40 @@ def build(market, seasons, cache, refresh):
     def factory():
         raise SystemExit("cache incomplete; run eval_harness once to fill it")
 
-    lines = eh.load_lines(factory, seasons, [market], cache, refresh)
+    # DERIVED MARKETS. qb_rushing does not exist upstream: it is stored as
+    # `rushing` and split out on nflverse position. load_lines filters the
+    # cache with the same .in_("market", ...) logic as the database query, so
+    # asking it for "qb_rushing" returns zero rows, `factory` raises, and the
+    # script reports an incomplete cache that is in fact complete. This
+    # mirrors eval_harness lines 944 to 979: fetch under the STORED label,
+    # split, then filter to what was asked for. The order is the point.
+    fetch_market = eh.FETCH_MARKET.get(market, market)
+    is_derived = market in eh.FETCH_MARKET
+    if is_derived:
+        print(f"  derived market {market} is stored as {fetch_market}; "
+              f"fetching {fetch_market} and splitting on nflverse position")
+
+    lines = eh.load_lines(factory, seasons, [fetch_market], cache, refresh)
+
+    if is_derived:
+        # min_match_rate matches the harness. This is a research script over
+        # historical rows, so aborting on a badly resolved dataset is right.
+        lines, split_report = data_utils.split_qb_rushing(
+            lines, min_match_rate=0.98)
+        print(f"  split: {split_report['reassigned']} of "
+              f"{split_report['rows_in_from_market']} "
+              f"{split_report['from_market']} rows reassigned to "
+              f"{split_report['to_market']} "
+              f"({split_report['reassigned_share']:.1%}), "
+              f"match rate {split_report['match_rate']:.4f}, "
+              f"{split_report['unmatched']} unmatched")
+        before = len(lines)
+        lines = lines[lines["market"] == market].copy()
+        print(f"  filtered {before} fetched rows to {len(lines)} {market} rows")
+        if lines.empty:
+            print(f"  no {market} rows survived the split")
+            return None, None, None, None
+
     lines = lines[lines["week"].notna()]
     props = eh.collapse_books(lines)
     props["_key"] = data_utils.norm_join_name(props["player"])
@@ -447,6 +492,19 @@ def main():
             print("  gate could not fit, skipping")
             continue
         pub = PUBLISHED_FD_BETA.get(m)
+        if pub is None:
+            # A market with no published beta cannot be gated. F1 in this
+            # script's own pre-registration says a market that FAILS the
+            # gate means nothing here counts for it, and a market with NO
+            # gate is in the same position. So skip it the way the gate
+            # failure below does, rather than crashing on None or, worse,
+            # scoring it ungated.
+            gate_fails.append(m)
+            print(f"  GATE SKIPPED: no published FanDuel beta for {m}. "
+                  f"Measure one with eval_harness --all-seasons "
+                  f"--markets {m} and add it to PUBLISHED_FD_BETA before "
+                  f"this market can be scored.\n")
+            continue
         diff = f["beta"] - pub
         ok = abs(diff) <= GATE_TOL
         print(f"  GATE beta {f['beta']:+.3f} vs published {pub:+.3f}"
