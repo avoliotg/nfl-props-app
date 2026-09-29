@@ -584,20 +584,57 @@ def current_week(season):
     return int(wk.max()) if len(wk) else None
 
 
+def upcoming_week(season):
+    """The first week that still has a game with NO RESULT, or None.
+
+    This is the next BETTABLE week, which is what a props board wants. A
+    week whose games are all played has complete data and no betting value.
+
+    Judged from the SCHEDULE's result column, the same source current_week
+    uses, so the answer is identical across all six boards and needs no
+    date or timezone arithmetic. A week stays current until its LAST game
+    has a result, so a Sunday evening with Monday night still to come
+    correctly returns that week rather than jumping ahead.
+
+    Returns None when every scheduled game has a result, which means the
+    season is over and the caller should fall back.
+    """
+    import pandas as pd
+    sched = load_schedules([season])
+    sched = sched.to_pandas() if hasattr(sched, "to_pandas") else sched
+    col = next((c for c in ("result", "home_score", "away_score")
+                if c in sched.columns), None)
+    if col is None:
+        return None
+    pending = sched[pd.to_numeric(sched[col], errors="coerce").isna()]
+    if not len(pending):
+        return None
+    wk = pd.to_numeric(pending["week"], errors="coerce").dropna()
+    return int(wk.min()) if len(wk) else None
+
+
 def default_week_index(weeks, season):
     """Index into `weeks` that app.py should preselect.
 
-    Prefers the current week. Falls back to the last entry, which is the old
-    behaviour, when the current week is not in the list (a completed season,
-    or a schedule that failed to load).
+    Prefers the next BETTABLE week: the first with a game still to play.
+
+    CHANGED 2026-09-30. This preferred current_week, the most recently
+    played week, which meant every board opened on a completed slate from
+    Monday night until the next game kicked off. current_week was chosen
+    on 2026-09-25 partly because defaulting forward produced a blank Line
+    Movement game picker, but that was the keyed-multiselect bug fixed the
+    same day this changed, not a property of the week default.
+
+    Falls back to current_week, then to the last entry, so a completed
+    season or a schedule that fails to load behaves as it did before.
     """
     if not weeks:
         return 0
-    cur = None
-    try:
-        cur = current_week(season)
-    except Exception:
-        cur = None
-    if cur is not None and cur in weeks:
-        return weeks.index(cur)
+    for fn in (upcoming_week, current_week):
+        try:
+            wk = fn(season)
+        except Exception:
+            wk = None
+        if wk is not None and wk in weeks:
+            return weeks.index(wk)
     return len(weeks) - 1
