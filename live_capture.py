@@ -26,6 +26,7 @@ SCHEMA REQUIREMENT as of 2026-09-28. Every row now carries commence_time, so
 the `lines` table must have that column before this script runs:
 
     alter table lines add column commence_time timestamptz;
+    alter table lines add column event_id text;
 
 Without it every insert in the run raises, insert_rows swallows the failure
 per batch, and the capture logs errors while writing nothing.
@@ -163,13 +164,19 @@ class Api:
 
 # ---------------------------------------------------------------------- parse
 
-def parse_event(payload, sport, season, week, captured_at, commence_time=None):
+def parse_event(payload, sport, season, week, captured_at,
+                commence_time=None, event_id=None):
     """Flatten one event-odds payload into `lines` rows.
 
     Over and under for the same player are folded into one row, matching the
     schema the transcription workflow produced. anytime_td arrives as a single
     'Yes' outcome with no point, so line stays null and over_odds carries the
     price, which is how the app already stores it.
+
+    event_id is stored as of 2026-09-30, for the same reason: it was in
+    hand and discarded. historical_lines has it NOT NULL and its values are
+    this API's 32-character hex event ids, so carrying it through is what
+    lets a captured row be matched to a historical one.
 
     commence_time is stored on every row as of 2026-09-28 (plan item 6.10).
     The API always supplies it and this function previously discarded it,
@@ -222,6 +229,11 @@ def parse_event(payload, sport, season, week, captured_at, commence_time=None):
                     "under_odds": rec["under_odds"],
                     "captured_at": captured_at,
                     "commence_time": commence_time,
+                    # The Odds API's own event id. historical_lines keys on
+                    # the same value, so keeping it lets a row be traced
+                    # across the two tables instead of needing a
+                    # synthesised identifier in a different format.
+                    "event_id": event_id,
                     "projection": None,
                     "edge": None,
                 })
@@ -432,7 +444,8 @@ def main():
                 week_cache[ct] = infer_week(sport, season, ct)
             week = week_cache[ct]
 
-        rows = parse_event(payload, sport, season, week, captured_at, ct)
+        rows = parse_event(payload, sport, season, week, captured_at, ct,
+                           event_id=e.get("id"))
         if not rows:
             print(f"  [{n}/{len(keep)}] {label}: 0 rows "
                   f"(props may not be posted yet)")
