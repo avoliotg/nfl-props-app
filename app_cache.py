@@ -154,6 +154,154 @@ def get_projections(season, week, market):
     return _projections(season, week, market)
 
 
+@st.cache_data(ttl=TTL, show_spinner=False)
+def _log_summary(market, seasons):
+    """market, seasons tuple -> {normalised name: summary dict}.
+
+    seasons MUST be a tuple. st.cache_data hashes its arguments and a list
+    is unhashable, which is the same trap that made rules.py's
+    _air_yards_history need tuple(seasons) after it was given an lru_cache.
+
+    Returns {} rather than raising if the stats load or the market is
+    unknown, so a tab that renders movement fine does not go down because a
+    game log could not be built.
+    """
+    import db
+    import player_log
+    from models import data_utils
+    try:
+        stats = data_utils.load_player_stats(list(seasons))
+        stats = stats.to_pandas() if hasattr(stats, "to_pandas") else stats
+    except Exception:
+        return {}
+    try:
+        # db._norm_name, NOT data_utils.norm_join_name. The join in app.py
+        # keys on mv["player"].map(db._norm_name), so these keys must come
+        # from the same normaliser or nothing matches. summarize_all wants a
+        # VECTORISED function, hence the map wrapper.
+        summ = player_log.summarize_all(
+            stats, market, lambda s: s.map(db._norm_name))
+    except Exception:
+        return {}
+    if summ is None or len(summ) == 0:
+        return {}
+    keep = [c for c in ("n", "mean", "median", "gap", "lo", "hi", "seasons")
+            if c in summ.columns]
+    return {k: {c: v[c] for c in keep} for k, v in summ[keep].iterrows()}
+
+
+def get_log_summary(market, seasons):
+    """Cached per-player game-log summary for one market.
+
+    `seasons` is coerced to a tuple here so callers can pass a list without
+    tripping the cache's hashing.
+    """
+    return _log_summary(market, tuple(seasons))
+
+
+MODEL_TRAIN_MAX_FALLBACK = 2024
+
+
+@st.cache_data(ttl=TTL, show_spinner=False)
+def _player_log(market, join_name, seasons):
+    """One player's displayable game log. Empty frame on any failure.
+
+    seasons MUST be a tuple: st.cache_data hashes its arguments.
+    """
+    import pandas as pd
+    import db
+    import player_log
+    from models import data_utils
+
+    mods = {}
+    try:
+        from models import (receiving, receptions, rushing, qb_passing,
+                            anytime_td, qb_rushing)
+        mods = {"receiving": receiving, "receptions": receptions,
+                "rushing": rushing, "qb_passing": qb_passing,
+                "anytime_td": anytime_td, "qb_rushing": qb_rushing}
+    except Exception:
+        pass
+
+    try:
+        stats = data_utils.load_player_stats(list(seasons))
+        stats = stats.to_pandas() if hasattr(stats, "to_pandas") else stats
+    except Exception:
+        return pd.DataFrame()
+    if stats is None or len(stats) == 0:
+        return pd.DataFrame()
+
+    def _norm(s):
+        return s.map(db._norm_name)
+
+    try:
+        sched = data_utils.load_schedules(list(seasons))
+        sched = sched.to_pandas() if hasattr(sched, "to_pandas") else sched
+    except Exception:
+        sched = None
+
+    # NAME BRIDGE. join_name came from the book's spelling; player_history
+    # wants nflverse's exact display name. Whichever display name normalises
+    # to the same key is the one to ask for.
+    disp = None
+    if "player_display_name" in stats.columns:
+        cand = stats[stats["player_display_name"].notna()]
+        keys = _norm(cand["player_display_name"])
+        hit = cand.loc[keys == join_name, "player_display_name"]
+        if len(hit):
+            disp = str(hit.iloc[0])
+
+    # CLOSING LINES from the local cache. FanDuel only, to match the Move
+    # column above, and the LAST capture of each week.
+    line_map = {}
+    try:
+        C = pd.read_parquet("lines_cache.parquet")
+        C = C[(C["market"] == market) & (C["book"] == db.DEFAULT_BOOK)]
+        C = C[C["season"].isin(list(seasons))]
+        if len(C):
+            C = C.assign(_k=_norm(C["player"]))
+            C = C[C["_k"] == join_name].sort_values("captured_at")
+            for s, w, ln in zip(C["season"], C["week"], C["line"]):
+                if pd.notna(w) and pd.notna(ln):
+                    line_map[(int(s), int(w))] = float(ln)
+    except Exception:
+        line_map = {}
+
+    # PROJECTIONS, only for seasons after the training cutoff. display_log
+    # blanks the rest, but not asking for them saves a model fit per season.
+    mod = mods.get(market)
+    cut = getattr(mod, "DEFAULT_TRAIN_MAX_SEASON",
+                  MODEL_TRAIN_MAX_FALLBACK) if mod else \
+        MODEL_TRAIN_MAX_FALLBACK
+    proj_map = {}
+    if mod is not None and disp and hasattr(mod, "player_history"):
+        for s in seasons:
+            if int(s) <= int(cut):
+                continue
+            try:
+                h = mod.player_history(int(s), disp)
+            except Exception:
+                continue
+            if h is None or len(h) == 0 or "projection" not in h.columns:
+                continue
+            for w, p in zip(h["week"], h["projection"]):
+                if pd.notna(w) and pd.notna(p):
+                    proj_map[(int(s), int(w))] = float(p)
+
+    try:
+        return player_log.display_log(
+            stats, market, join_name, _norm, sched=sched,
+            line_map=line_map or None, proj_map=proj_map or None,
+            train_max_season=cut, seasons=list(seasons))
+    except Exception:
+        return pd.DataFrame()
+
+
+def get_player_log(market, join_name, seasons):
+    """Cached game log for one player in one market. Empty frame if absent."""
+    return _player_log(market, join_name, tuple(seasons))
+
+
 def clear_all():
     """Hard reset, for a debug button. Prefer bump() in normal use."""
     _lines.clear()

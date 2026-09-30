@@ -27,7 +27,7 @@ import matplotlib.pyplot as plt  # noqa: E402
 from matplotlib.backends.backend_pdf import PdfPages  # noqa: E402
 from matplotlib.patches import Circle, Ellipse, Polygon, Rectangle  # noqa: E402
 
-DROP_COLS = ("Trend", "Bet?")
+DROP_COLS = ("Trend", "Add to Bet Log", "Bet?")
 
 BRAND = "#e0873a"                # the app's heading orange (wordmark)
 ORB = "#8b5fc7"                  # crystal ball purple

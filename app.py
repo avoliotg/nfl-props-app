@@ -643,7 +643,8 @@ with tab_board:
                 disabled=[c for c in save_cols],
                 column_config={
                     "player_display_name": st.column_config.TextColumn("Player", width="medium"),
-                    "bet": st.column_config.CheckboxColumn("Bet?", width="small",
+                    "bet": st.column_config.CheckboxColumn(
+                        "Add to Bet Log", width="small",
                         help="Check if you actually placed this bet."),
                 }, key=f"graded_editor_{market_key}")
 
@@ -922,6 +923,11 @@ player per market. The market sets the number; this tab shows how that
 number and its price have moved since the prop was posted, and across how
 many books.
 
+**Show Game Log Below** ticks open that player's game log under the table:
+season, week, opponent with "@" for away, his usage that week, the result,
+the closing line, whether it cleared, and the model's projection where that
+season is out of sample. Tick two players to compare them.
+
 **How to read a row for a decision**
 
 1. Start with **Move** and **Price**. Together they say whether the market
@@ -947,6 +953,18 @@ many books.
 - **Latest Line** FanDuel's number at the most recent capture.
 - **Diff** Proj minus Latest Line. Positive means the projection sits above
   the line, so the model leans OVER.
+- **Med** and **Mean** the player's own game log, over the seasons selected
+  at the top of the tab. The MEDIAN is the one to compare against the line,
+  because a line is placed so each side is near even money and that is a
+  statement about the median. The MEAN sits above it whenever a player has
+  occasional big games, so the GAP between the two is his volatility: a
+  wide gap is a player who is usually quiet and sometimes enormous, a
+  narrow one is a metronome. Games with no stat line are excluded, so a
+  week he did not play does not count as a zero.
+- **Games** how many games those figures cover. Read it before trusting
+  them. One back in this data shows a gap of -4.3 over three games and
+  +17.4 over seven: on the short sample he looks steady and he is the most
+  volatile player on the board.
 - **Move** FanDuel's line now, minus its line at the first capture. In
   yards, or receptions.
 - **Price** average change in the devigged two-sided probability across
@@ -992,6 +1010,30 @@ Rows with no comparable movement sink to the bottom.
     TIER_EMOJI = {"Pass": "⚪ Pass", "Lean": "🟡 Lean",
                   "Strong": "🟢 Strong", "Max": "🔥 Max"}
     TA_EMOJI = {"toward": "🟢 toward", "away": "🔴 away", "flat": "⚪ flat"}
+
+    # GAME LOG SCOPE. Defaults to every available season, because early in
+    # a year the current-season median is three numbers and three numbers
+    # is not a median. Narrow it when recent form is the question.
+    _all_seasons = list(module.available_seasons())
+    # DEFAULTS TO THE SELECTED SEASON, not every season. Four seasons is
+    # about 64 games, so the current year's three or four are five percent
+    # of the figure and the median ends up describing a player's history
+    # rather than his current situation: a four-season median for a receiver
+    # who changed teams is largely about the old one.
+    #
+    # The cost is that early in a season this is three games. That is what
+    # the Games column is for, and it is the honest tradeoff rather than a
+    # hidden one.
+    _log_default = ([lm_season] if lm_season in _all_seasons
+                    else _all_seasons)
+    _log_seasons = st.multiselect(
+        "Game log seasons", _all_seasons, default=_log_default,
+        key="lm_log_seasons",
+        help="Which seasons the Med, Mean and Games columns are computed "
+             "over. Defaults to the season selected above. Widen it for a "
+             "bigger sample; the Games column shows what you get.")
+    if not _log_seasons:
+        _log_seasons = _all_seasons
 
     import game_export
     lm_games = game_export.load_games(lm_season, lm_week)
@@ -1094,12 +1136,21 @@ Rows with no comparable movement sink to the bottom.
         # to the bottom rather than being mixed in with the genuinely flat
         # ones as fillna(0) did.
         mv["known"] = mv["abs_move"].notna().astype(int)
+        if mkt_label == "anytime_td":
+            # Every Move on this board is +0.0: the market has no line, so
+            # there is nothing for a movement sort to rank and it fell back
+            # to alphabetical. latest_line holds the IMPLIED PROBABILITY
+            # for this market, which is the informative order.
+            mv["abs_move"] = pd.to_numeric(mv["latest_line"],
+                                           errors="coerce")
+            mv["known"] = mv["abs_move"].notna().astype(int)
         mv = mv.sort_values(["known", "abs_move", "widen"],
                             ascending=[False, False, False],
                             na_position="last").reset_index(drop=True)
 
         # Attach team/game, then filter. Filtering mv itself (rather than the
-        # display grid) keeps the Bet?/Save path consistent: savable rows and
+        # display grid) keeps the Add to Bet Log / Save path consistent:
+        # savable rows and
         # the checkbox map both derive from mv, so a filtered table cannot try
         # to save a player who is not visible.
         if lm_filter_on:
@@ -1166,6 +1217,24 @@ Rows with no comparable movement sink to the bottom.
         # that market has no line column anyway and the empty-column drop
         # removes both.
         mv["proj_diff"] = (_proj_num - _line_num) if not is_td else None
+
+        # GAME LOG SUMMARY, joined on the same normalised key as the
+        # projection above so the two cannot disagree about who is who.
+        _logmap = app_cache.get_log_summary(mkt_label, _log_seasons)
+        if _logmap:
+            _lkeys = mv["player"].map(db._norm_name)
+
+            def _logpick(field):
+                return _lkeys.map(
+                    lambda k: (_logmap.get(k) or {}).get(field))
+
+            mv["log_med"] = _logpick("median")
+            mv["log_mean"] = _logpick("mean")
+            mv["log_n"] = _logpick("n")
+        else:
+            mv["log_med"] = None
+            mv["log_mean"] = None
+            mv["log_n"] = None
 
         # FIRST CAPTURE as a timestamp, replacing a duration in hours.
         # first_captured is FanDuel's earliest snapshot for this prop, which
@@ -1242,21 +1311,30 @@ Rows with no comparable movement sink to the bottom.
             "Edge": mv["latest_edge"],
             "Side": mv["latest_side"].replace("", "—") if not is_td else "—",
             f"Latest {line_word}": mv["latest_line"],
+            # SCORED% replaces Med and Mean for anytime_td. A median of a
+            # 0/1 outcome is 0 or 1 and says nothing; the mean IS the rate.
+            "Scored%": (pd.to_numeric(mv["log_mean"], errors="coerce") * 100.0
+                        if is_td else None),
+            "Med": mv["log_med"] if not is_td else None,
+            "Mean": mv["log_mean"] if not is_td else None,
+            "Games": mv["log_n"],
             "Move": mv["line_move"],
             "Price": mv["price_txt"],
             "# of Books": mv["n_books_window"],
             "Spread": mv["spread_txt"],
-            "First Capture": _first_disp,
             "# of Captures": mv["snapshots"],
-            "Trend": mv["series"],
+            "First Capture": _first_disp,
             "Latest Capture": cap_disp,
+            "Trend": mv["series"],
             "Rule": mv["player"].map(lambda p: rule_side.get(str(p), "")),
-            "Bet?": False,
+            "Show Game Log Below": False,
+            "Add to Bet Log": False,
         })
         # Price is now TEXT, because it carries "flat" below the deadband,
         # so it is not coerced here.
         # First Capture is a formatted timestamp now, so it is not coerced.
-        for numcol in ["Proj", "Diff", "Edge", f"Latest {line_word}", "Move",
+        for numcol in ["Proj", "Diff", "Edge", f"Latest {line_word}",
+                       "Scored%", "Med", "Mean", "Games", "Move",
                        "# of Books"]:
             grid[numcol] = pd.to_numeric(grid[numcol], errors="coerce").astype("float64")
 
@@ -1268,8 +1346,31 @@ Rows with no comparable movement sink to the bottom.
         # rather than an absent one. Any column with a real value is kept.
         # Diff is dropped with Proj: a difference column with no projection
         # to difference is worse than absent.
+        # PRICE, when the channel is idle. On a market that moves its line
+        # and leaves the odds near even, every row reads "flat" and the
+        # column says one thing all the way down. That is the same case as
+        # an empty column: absent states "this market does not work that
+        # way", a wall of identical values invites the reader to look for a
+        # difference that is not there. It stays on receptions, where the
+        # price IS the channel.
+        if "Price" in grid.columns:
+            _pv = set(grid["Price"].dropna().astype(str))
+            if _pv <= {"flat", "", "None", "nan"}:
+                grid = grid.drop(columns=["Price"])
+
+        # UNAVAILABLE BY CONSTRUCTION, not merely empty. movement.py skips
+        # anytime_td: with no under side there is no two-sided devigged
+        # price, so no comparison window and no cross-book spread. These
+        # rendered as a column of "None" and a column of blanks.
+        if is_td:
+            for _c in ("# of Books", "Spread", "Price"):
+                if _c in grid.columns:
+                    grid = grid.drop(columns=[_c])
+
+        # Med, Mean and Games travel together: a mean with no sample size
+        # is the figure this project has been most careful not to publish.
         for _c in ["Tier", "vs. Model", "Proj", "Diff", "Edge", "Side",
-                   "Rule"]:
+                   "Scored%", "Med", "Mean", "Games", "Rule"]:
             if _c not in grid.columns:
                 continue
             _vals = grid[_c].dropna()
@@ -1296,13 +1397,41 @@ Rows with no comparable movement sink to the bottom.
 
         edited = st.data_editor(
             grid, width='stretch', hide_index=True,
-            disabled=[c for c in grid.columns if c != "Bet?"],
+            # BOTH checkboxes must stay editable. This excluded exactly
+            # one column, so adding a second without changing it would
+            # render the new checkbox and silently refuse the click.
+            disabled=[c for c in grid.columns
+                      if c not in ("Add to Bet Log",
+                                   "Show Game Log Below")],
             column_config={
                 "Player": st.column_config.TextColumn("Player", pinned=True, width="medium"),
                 "Game": st.column_config.TextColumn("Game", width="small"),
                 "Tier": st.column_config.TextColumn("Tier", width="small"),
-                "Proj": st.column_config.NumberColumn("Proj", format="%.1f", width="small"),
-                "Diff": st.column_config.NumberColumn("Diff", format="%+.1f", width="small"),
+                # anytime_td's Proj and Latest Prob% are ALREADY on a
+                # 0-to-100 scale: project_week does
+                # (predict_proba * 100).round(1) and american_to_prob
+                # returns round(... * 100, 1). So these only need the unit
+                # in the label, never a conversion.
+                "Proj": st.column_config.NumberColumn(
+                    "Proj%" if is_td else "Proj",
+                    format="%.1f", width="small"),
+                "Diff": st.column_config.NumberColumn(
+                    "Diff pts" if is_td else "Diff",
+                    format="%+.1f", width="small",
+                    help=("Proj% minus the market's implied Prob%. That "
+                          "implied figure comes from a ONE-SIDED price, so "
+                          "it includes the book's margin and overstates "
+                          "the true chance: a projection below it is "
+                          "expected and is not by itself a disagreement.")
+                    if is_td else None),
+                "Scored%": st.column_config.NumberColumn(
+                    "Scored%", format="%.0f%%", width="small",
+                    help="Share of games in the selected seasons in which "
+                         "this player scored a rushing or receiving "
+                         "touchdown. Passing touchdowns do not count."),
+                "Med": st.column_config.NumberColumn("Med", format="%.1f", width="small"),
+                "Mean": st.column_config.NumberColumn("Mean", format="%.1f", width="small"),
+                "Games": st.column_config.NumberColumn("Games", format="%d", width="small"),
                 "Edge": st.column_config.NumberColumn("Edge", format="%+.1f", width="small"),
                 "Side": st.column_config.TextColumn("Side", width="small"),
                 "Trend": st.column_config.LineChartColumn(f"{line_word} Trend", width="small"),
@@ -1315,9 +1444,60 @@ Rows with no comparable movement sink to the bottom.
                 "vs. Model": st.column_config.TextColumn("vs. Model", width="small"),
                 "# of Captures": st.column_config.NumberColumn("# of Captures", format="%d", width="small"),
                 "Latest Capture": st.column_config.TextColumn("Latest Capture", width="small"),
-                "Bet?": st.column_config.CheckboxColumn("Bet?", width="small"),
+                "Show Game Log Below": st.column_config.CheckboxColumn(
+                    "Show Game Log Below", width="small",
+                    help="Tick to show this player's game log underneath "
+                         "the table. Tick two to compare them."),
+                "Add to Bet Log": st.column_config.CheckboxColumn(
+                    "Add to Bet Log", width="small",
+                    help="Tick the picks you actually placed. They are flagged as bet when you press Save below."),
             },
             key=f"movement_editor_{mkt_label}")
+
+        # GAME LOGS for the ticked players, immediately under the table so
+        # the log sits next to the row it came from.
+        _log_picks = []
+        try:
+            if "Show Game Log Below" in edited.columns:
+                _log_picks = [str(p) for p, f in zip(edited["Player"],
+                                                     edited["Show Game Log Below"])
+                              if bool(f)]
+        except Exception:
+            _log_picks = []
+        for _pl in _log_picks:
+            _key = db._norm_name(_pl)
+            _lg = app_cache.get_player_log(mkt_label, _key, _log_seasons)
+            st.markdown("**%s** game log" % _pl)
+            if _lg is None or len(_lg) == 0:
+                st.caption(
+                    "No game log for this player in the selected seasons. "
+                    "Widen 'Game log seasons' above, or the player has no "
+                    "recorded games in this market.")
+                continue
+            # The summary the table shows, restated so the log and the
+            # columns above cannot appear to disagree.
+            _s = _logmap.get(_key) or {}
+            if _s:
+                # MARKET-AWARE. player_log.summary_line writes a scoring
+                # rate for anytime_td and a median-and-gap sentence
+                # elsewhere. Building it inline here produced
+                # "median 0.0, mean 0.0, gap +0.0" on the TD board.
+                try:
+                    import player_log as _pl
+                    _txt = _pl.summary_line(_s, mkt_label)
+                except Exception:
+                    _txt = "n=%d" % int(_s.get("n", 0) or 0)
+                if not is_td:
+                    _txt += ("  ·  the MEDIAN is what the bet settles on; "
+                             "the gap between mean and median is this "
+                             "player's volatility")
+                st.caption(_txt)
+            st.dataframe(_lg, width='stretch', hide_index=True)
+            if "Proj" in _lg.columns:
+                st.caption(
+                    "Proj is blank on seasons the model was TRAINED on, "
+                    "because a projection for a season it was fitted on "
+                    "would flatter it on the very weeks shown here.")
 
         # BOOK BY BOOK. The levels are what a reader actually wants and
         # they will not fit in a cell, so they get a table of their own.
@@ -1355,7 +1535,8 @@ Rows with no comparable movement sink to the bottom.
         with st.expander(f"📋 Copy {mkt_key} as text"):
             # By Book holds a list per cell, which has no text form.
             # Agree is text and copies fine; only Trend holds a list.
-            copy_df = grid.drop(columns=[c for c in ("Trend", "Bet?")
+            copy_df = grid.drop(columns=[c for c in ("Trend",
+                                                     "Add to Bet Log")
                                          if c in grid.columns])
             fmt = st.radio("Format", ["Markdown (Reddit)", "TSV (Sheets/Excel)"],
                            horizontal=True, key=f"copy_fmt_{mkt_label}")
@@ -1367,7 +1548,8 @@ Rows with no comparable movement sink to the bottom.
 
         if st.button(f"💾 Save {mkt_key} to Log", key=f"movement_save_btn_{mkt_label}"):
             savable = mv[mv["latest_edge"].notna()].copy()
-            bet_flags = edited.set_index("Player")["Bet?"].to_dict()
+            bet_flags = (edited.set_index("Player")["Add to Bet Log"]
+                         .to_dict())
             entries = pd.DataFrame({
                 "player": savable["player"],
                 "projection": savable["raw_projection"],

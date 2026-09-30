@@ -48,6 +48,11 @@ import numpy as np
 import pandas as pd
 
 # The outcome column each market settles on, in nflverse player stats.
+#
+# anytime_td is ABSENT on purpose: it has no single column. The bet settles
+# on whether the player scored a rushing OR receiving touchdown, so the
+# outcome is derived from two columns by td_scored() below. Passing
+# touchdowns do not count: the thrower is not the scorer.
 MARKET_STAT = {
     "receiving": "receiving_yards",
     "receptions": "receptions",
@@ -55,6 +60,33 @@ MARKET_STAT = {
     "qb_passing": "passing_yards",
     "qb_rushing": "rushing_yards",
 }
+
+TD_MARKET = "anytime_td"
+TD_COLS = ("rushing_tds", "receiving_tds")
+
+
+def td_scored(rows):
+    """Did the player score an anytime touchdown, per row. 1, 0 or NaN.
+
+    Rushing plus receiving touchdowns. PASSING touchdowns are excluded
+    because the passer is not the scorer, which is what the market settles
+    on.
+
+    NaN where neither column is present for that row, so a week the player
+    did not appear in is not recorded as "did not score".
+    """
+    present = [c for c in TD_COLS if c in rows.columns]
+    if not present:
+        return pd.Series([np.nan] * len(rows), index=rows.index)
+    tot = None
+    any_known = None
+    for c in present:
+        v = pd.to_numeric(rows[c], errors="coerce")
+        tot = v.fillna(0) if tot is None else tot + v.fillna(0)
+        known = v.notna()
+        any_known = known if any_known is None else (any_known | known)
+    out = (tot > 0).astype(float)
+    return out.where(any_known, np.nan)
 
 # Volume and context columns worth showing beside the outcome, per market.
 # These are what let a reader discount a game: six carries in a blowout is
@@ -162,17 +194,41 @@ def summarize(log, market, line=None):
     return res
 
 
+def _span_of(s):
+    """A season span string from either summary shape, or "" if neither."""
+    seasons = s.get("seasons")
+    if isinstance(seasons, (list, tuple)) and len(seasons):
+        lo, hi = min(seasons), max(seasons)
+    else:
+        lo, hi = s.get("season_min"), s.get("season_max")
+        if lo is None or hi is None:
+            return ""
+    return str(int(lo)) if int(lo) == int(hi) else "%d-%d" % (int(lo),
+                                                              int(hi))
+
+
 def summary_line(s, market, unit=""):
     """One-line rendering, with the sample size attached to every figure.
 
     The sample size is not decoration. Three games in week 4 is not a
     median, and a figure quoted without its n will be read as a fact.
+
+    anytime_td gets a DIFFERENT sentence. Its outcome is 0 or 1, so the
+    median is 0 or 1 and says nothing, the mean IS the scoring rate, and
+    the mean-minus-median gap is not volatility but an artifact of which
+    side of a half the rate sits on. Printing the yardage sentence there
+    produced "median 0.0, mean 0.0, gap +0.0", which is true and useless.
     """
     if s["n"] == 0:
         return "no games in the selected seasons"
-    seasons = s.get("seasons") or []
-    span = (str(seasons[0]) if len(seasons) == 1
-            else "%s-%s" % (min(seasons), max(seasons)))
+    # ACCEPTS EITHER SHAPE. summarize() supplies `seasons` as a list;
+    # summarize_all() supplies season_min and season_max. Reading only one
+    # of them raised a TypeError on the other.
+    span = _span_of(s)
+    if market == TD_MARKET:
+        rate = s["mean"] or 0.0
+        return ("%s: scored in %d of %d game(s), %.0f%%"
+                % (span, int(round(rate * s["n"])), s["n"], 100.0 * rate))
     bits = ["%s, n=%d" % (span, s["n"]),
             "median %.1f%s" % (s["median"], unit),
             "mean %.1f%s" % (s["mean"], unit),
@@ -205,3 +261,263 @@ def compare_frame(logs, market):
                       round(s["mean"], 1), round(s["gap"], 1),
                       round(s["lo"], 1), round(s["hi"], 1)]
     return pd.DataFrame(data, index=rows)
+
+def summarize_all(stats, market, norm_fn, seasons=None):
+    """One row per player: n, mean, median and their gap, for one market.
+
+    BULK ON PURPOSE. build_log filters the whole stats frame per player, and
+    the Line Movement tab renders five markets with tens of players each, so
+    calling it per player per market would rebuild the same frame hundreds
+    of times on every widget interaction. This does one groupby.
+
+    Returns a frame indexed by the NORMALISED name, so the caller joins
+    without writing another name-matching implementation.
+
+    Rows where the outcome is null are dropped before aggregating. That
+    matters: a player who did not play has no stat line, and a zero from a
+    DNP averaged together with real games understates every figure here.
+    """
+    is_td = (market == TD_MARKET)
+    col = stat_col(market)
+    if stats is None or len(stats) == 0:
+        return pd.DataFrame()
+    if "player_display_name" not in stats.columns:
+        return pd.DataFrame()
+    if not is_td and (col is None or col not in stats.columns):
+        return pd.DataFrame()
+
+    d = stats[stats["player_display_name"].notna()].copy()
+    if seasons:
+        d = d[d["season"].isin(list(seasons))]
+    if is_td:
+        # For this market the "median" is a SCORING RATE: the mean of a 0/1
+        # outcome. The median of a 0/1 series is 0 or 1 and says nothing,
+        # so a reader should look at the mean here and the median
+        # everywhere else. summary_line names the market for that reason.
+        d = d.assign(_td=td_scored(d))
+        d = d[d["_td"].notna()]
+        col = "_td"
+    else:
+        d = d[pd.to_numeric(d[col], errors="coerce").notna()]
+    if d.empty:
+        return pd.DataFrame()
+
+    d["_key"] = norm_fn(d["player_display_name"])
+    d["_v"] = pd.to_numeric(d[col], errors="coerce")
+
+    g = d.groupby("_key")["_v"]
+    out = pd.DataFrame({
+        "n": g.size(),
+        "mean": g.mean(),
+        "median": g.median(),
+        "lo": g.min(),
+        "hi": g.max(),
+    })
+    # The GAP is mean minus median: per-player skew. Positive is the
+    # expected direction for an outcome with a floor at zero and a long
+    # right tail. A NEGATIVE gap usually means the sample is too short to
+    # contain the player's big games rather than that he has none.
+    out["gap"] = out["mean"] - out["median"]
+    if "season" in d.columns:
+        g2 = d.groupby("_key")["season"]
+        # NAMED season_min / season_max, NOT "seasons". summarize() returns
+        # `seasons` as a LIST and this returned it as a nunique COUNT, so
+        # summary_line assumed a list and raised on an int. One field name
+        # meaning two things is how a wrong number survives review.
+        out["n_seasons"] = g2.nunique()
+        out["season_min"] = g2.min()
+        out["season_max"] = g2.max()
+    return out
+
+# Column labels per market, for the displayed log. The outcome column is
+# named for what it is rather than "actual", because a log of receiving
+# yards beside a log of receptions should not share a header.
+STAT_LABEL = {
+    "anytime_td": "Scored",
+    "receiving": "Rec Yds",
+    "receptions": "Rec",
+    "rushing": "Rush Yds",
+    "qb_passing": "Pass Yds",
+    "qb_rushing": "Rush Yds",
+}
+
+# The USAGE stat that drives the market. It answers "did he get 2 targets or
+# 12" when a yardage number looks low, which is the difference between a bad
+# game and a game he barely played in.
+VOLUME_COL = {
+    # Touches, as the usage behind a scoring chance. carries alone would
+    # miss a receiving back, so this uses carries and reports targets
+    # separately via the second entry handled in display_log.
+    "anytime_td": ("carries", "Car"),
+    "receiving": ("targets", "Tgts"),
+    "receptions": ("targets", "Tgts"),
+    "rushing": ("carries", "Car"),
+    "qb_passing": ("attempts", "Att"),
+    "qb_rushing": ("carries", "Car"),
+}
+
+
+def american_to_prob(odds):
+    """American odds -> implied probability as a PERCENT, or None.
+
+    Mirrors models.anytime_td.american_to_prob deliberately rather than
+    importing it, so this module keeps no dependency on the market modules
+    and stays testable on its own. The two must agree: the Line Movement
+    table's "Latest Prob%" comes from that function, and a log column
+    produced a different way would silently disagree with the row above it.
+
+    ONE-SIDED, so this INCLUDES the book's hold and overstates the true
+    probability. anytime_td cannot be devigged, which devig.py refuses for
+    that reason.
+    """
+    if odds is None or pd.isna(odds):
+        return None
+    odds = float(odds)
+    if odds > 0:
+        return round(100 / (odds + 100) * 100, 1)
+    return round(-odds / (-odds + 100) * 100, 1)
+
+
+def opponent_labels(stats_rows, sched):
+    """Opponent with "@" prefix for away games, as a Series.
+
+    nflverse player stats carry `opponent_team` but no home/away flag, so
+    the side comes from the schedule: if the player's team is the game's
+    home team it was a home game. Falls back to the bare opponent when the
+    schedule is unavailable, rather than guessing a side.
+    """
+    opp = stats_rows.get("opponent_team")
+    if opp is None:
+        return pd.Series([""] * len(stats_rows), index=stats_rows.index)
+    if sched is None or len(sched) == 0 or "game_id" not in stats_rows.columns:
+        return opp.astype(str)
+    cols = [c for c in ("game_id", "home_team") if c in sched.columns]
+    if len(cols) < 2:
+        return opp.astype(str)
+    home = dict(zip(sched["game_id"], sched["home_team"]))
+    team = stats_rows.get("team")
+    if team is None:
+        return opp.astype(str)
+    out = []
+    for gid, tm, op in zip(stats_rows["game_id"], team, opp):
+        h = home.get(gid)
+        if h is None or pd.isna(h):
+            out.append(str(op))
+        else:
+            out.append(str(op) if str(tm) == str(h) else "@ " + str(op))
+    return pd.Series(out, index=stats_rows.index)
+
+
+def display_log(stats, market, join_name, norm_fn, sched=None,
+                line_map=None, proj_map=None, train_max_season=None,
+                seasons=None):
+    """A player's game log, ready to render. Most recent game first.
+
+    line_map and proj_map are {(season, week): value} dicts supplied by the
+    caller. Passing them in keeps this module free of database and model
+    imports, so it stays testable without either.
+
+    THE PROJECTION IS WITHHELD ON TRAINING SEASONS. The market models train
+    through train_max_season (2024 at the time of writing, hardcoded in
+    receiving.load_model and exposed as DEFAULT_TRAIN_MAX_SEASON in rushing
+    and qb_passing). A projection for a season the model was FITTED on is
+    in-sample and would flatter it on exactly the weeks being inspected, so
+    those cells are blanked. 2025 and 2026 are genuinely out-of-sample and
+    are shown.
+
+    Reading the cutoff from the model rather than hardcoding a year means
+    the column corrects itself if training is ever extended.
+    """
+    is_td = (market == TD_MARKET)
+    col = stat_col(market)
+    if stats is None or len(stats) == 0:
+        return pd.DataFrame()
+    if "player_display_name" not in stats.columns:
+        return pd.DataFrame()
+    if not is_td and (col is None or col not in stats.columns):
+        return pd.DataFrame()
+
+    d = stats[stats["player_display_name"].notna()].copy()
+    d["_key"] = norm_fn(d["player_display_name"])
+    d = d[d["_key"] == join_name]
+    if seasons:
+        d = d[d["season"].isin(list(seasons))]
+    if is_td:
+        # DERIVED OUTCOME. NaN means he did not appear that week, which is
+        # not the same as not scoring, so those rows are dropped like any
+        # other missing stat line.
+        d["_td"] = td_scored(d)
+        d = d[d["_td"].notna()]
+        col = "_td"
+    else:
+        # A week with no stat line is a week he did not play. Excluded, so
+        # it never reads as a zero.
+        d = d[pd.to_numeric(d[col], errors="coerce").notna()]
+    if d.empty:
+        return pd.DataFrame()
+
+    d = d.sort_values(["season", "week"], ascending=[False, False])
+
+    stat_lab = STAT_LABEL.get(market, "Result")
+    vol_col, vol_lab = VOLUME_COL.get(market, (None, None))
+
+    out = pd.DataFrame({
+        "Season": d["season"].astype(int),
+        "Week": d["week"].astype(int),
+        "Opp": opponent_labels(d, sched),
+    })
+    if vol_col and vol_col in d.columns:
+        out[vol_lab] = pd.to_numeric(d[vol_col], errors="coerce")
+    if is_td and "targets" in d.columns:
+        # A receiving back scores through the air, so targets belong beside
+        # carries for this market rather than instead of them.
+        out["Tgts"] = pd.to_numeric(d["targets"], errors="coerce")
+    if is_td:
+        out[stat_lab] = ["yes" if v == 1 else "no"
+                         for v in pd.to_numeric(d[col], errors="coerce")]
+    else:
+        out[stat_lab] = pd.to_numeric(d[col], errors="coerce")
+
+    keys = list(zip(out["Season"], out["Week"]))
+    if is_td:
+        # anytime_td has NO LINE. Its price lives in over_odds alone, so
+        # there is nothing to devig and a "Hit" column against a line would
+        # be meaningless. Both the American price and the implied
+        # percentage are shown: the odds are what the book displays, the
+        # percentage is what compares to Proj.
+        #
+        # ONE-SIDED, so the percentage INCLUDES the hold and overstates the
+        # true chance. A projection below it is therefore expected and is
+        # not by itself a disagreement.
+        if line_map:
+            out["Price"] = [line_map.get(k) for k in keys]
+            out["Closing%"] = [american_to_prob(line_map.get(k))
+                               for k in keys]
+        if proj_map:
+            cut = train_max_season
+            out["Proj%"] = [
+                (proj_map.get(k) if (cut is None or k[0] > cut) else None)
+                for k in keys]
+        return out.reset_index(drop=True)
+    if line_map:
+        out["Line"] = [line_map.get(k) for k in keys]
+        # Did the result clear the line that week. Blank where either side
+        # is missing, and blank on a push rather than assigning it a side.
+        res, ln = out[stat_lab].to_numpy(), out["Line"].to_numpy()
+        hit = []
+        for r, l in zip(res, ln):
+            if l is None or pd.isna(l) or pd.isna(r):
+                hit.append("")
+            elif r > l:
+                hit.append("over")
+            elif r < l:
+                hit.append("under")
+            else:
+                hit.append("push")
+        out["Hit"] = hit
+    if proj_map:
+        cut = train_max_season
+        out["Proj"] = [
+            (proj_map.get(k) if (cut is None or k[0] > cut) else None)
+            for k in keys]
+    return out.reset_index(drop=True)
