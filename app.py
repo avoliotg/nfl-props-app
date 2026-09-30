@@ -145,13 +145,19 @@ if WELCOME_BANNER.strip():
 
 st.divider()
 
-tab_labels = ["📋 Board", "📊 Scorecard", "🎯 Top Plays", "🔍 Market History",
-              "📈 Line Movement & Side Picker", "📖 Guide"]
+tab_labels = ["\U0001F4C8 Line Movement & Decisioning",
+              "\U0001F4CB Board", "\U0001F4CA Scorecard",
+              "\U0001F3AF Top Plays", "\U0001F50D Market History",
+              "\U0001F4D6 Guide"]
 if IS_ADMIN:
     tab_labels.append("📥 Import")
     tab_labels.append("📤 Export")
 _tabs = st.tabs(tab_labels)
-tab_board, tab_scorecard, tab_top, tab_player, tab_movement, tab_guide = _tabs[0], _tabs[1], _tabs[2], _tabs[3], _tabs[4], _tabs[5]
+# POSITIONAL, and it must match tab_labels above. Line Movement moved to
+# index 0, so everything else shifts by one. Reordering the labels without
+# reordering this would put the Board's content inside the Line Movement tab
+# and would compile and run while being completely wrong.
+tab_movement, tab_board, tab_scorecard, tab_top, tab_player, tab_guide = _tabs[0], _tabs[1], _tabs[2], _tabs[3], _tabs[4], _tabs[5]
 
 TIER_COLORS = {"Pass": "#8a7f70", "Lean": "#e6c14d",
                "Strong": "#4caf72", "Max": "#f0964a"}
@@ -587,7 +593,7 @@ with tab_board:
                     "FanDuel moves it through the ODDS. Tested against the "
                     "devigged price, the shipped probability lost on log loss "
                     "and returned an encompassing t of +0.60. Side-picking "
-                    "now lives in the Line Movement & Side Picker tab, where "
+                    "now lives in the Line Movement & Decisioning tab, where "
                     "two pricing-bias rules with measured out-of-sample "
                     "support fire on specific props.")
             else:
@@ -904,16 +910,71 @@ with tab_top:
 
 # ============ LINE MOVEMENT ============
 with tab_movement:
-    st.subheader("📈 Line Movement & Side Picker")
-    st.caption("Every captured snapshot for each player, across all markets. "
-               "🟢 toward = the line moved toward the model's read (market agreeing). "
-               "🔴 away = it moved against the model (be more skeptical). "
-               "Sparklines need 3+ snapshots to render. Check **Bet?** and hit Save to log picks.")
-    st.caption("The **Rule** column flags props where a rule with measured "
-               "out-of-sample support fires, and on which side. Two rules are "
-               "live and both say UNDER; they are PRICING BIASES, not model "
-               "verdicts, so a rule can fire where the model has no opinion. "
-               "The column is absent for markets no rule covers.")
+    st.subheader("\U0001F4C8 Line Movement & Decisioning")
+    # HELP, in a popover rather than a caption block. The captions this
+    # replaced described "toward" and "away", a column that no longer
+    # exists, and cost nine lines of permanent height.
+    _help_host = (st.popover if hasattr(st, "popover") else st.expander)
+    with _help_host("Help - How to use this tab to make betting decisions"):
+        st.markdown("""
+**What this tab is.** Every captured snapshot of every prop, one row per
+player per market. The market sets the number; this tab shows how that
+number and its price have moved since the prop was posted, and across how
+many books.
+
+**How to read a row for a decision**
+
+1. Start with **Move** and **Price**. Together they say whether the market
+   has changed its mind, and through which channel. A book moves a prop
+   either by changing the number or by changing the odds at the same
+   number, and markets differ in habit: receptions almost always moves the
+   price, the yardage markets almost always move the line.
+2. Check **Spread**. A move the whole market makes together means something
+   different from one book moving alone.
+3. Check **# of Books**. A figure from three books is weaker than the same
+   figure from seven.
+4. Check **Rule**. Where it fires, there is measured out-of-sample support
+   for that side.
+5. Open **Book by book** below the table to see the actual numbers each
+   book moved from and to.
+
+**The columns**
+
+- **Latest Line** FanDuel's number at the most recent capture.
+- **Move** FanDuel's line now, minus its line at the first capture. In
+  yards, or receptions.
+- **Price** average change in the devigged two-sided probability across
+  books, in probability points. Devigged means the hold is removed, so this
+  moves only when a book changes its opinion rather than its margin. Reads
+  "flat" below one point, because below that books are quantising rather
+  than deciding.
+- **# of Books** how many books had a price both at the start of the
+  comparison window and later. A book that appeared too late to compare is
+  excluded rather than counted as unmoved.
+- **Spread** the range across those books' lines, start of the window then
+  end. `2 -> 0` means they were two apart and converged onto one number.
+  `0 -> 1` means they agreed and then split. A single number means the
+  spread did not change.
+- **First Capture** when this prop was first seen at FanDuel.
+- **# of Captures** how many FanDuel snapshots exist for it.
+- **Trend** FanDuel's line over those captures.
+- **Latest Capture** when the most recent snapshot was taken.
+- **Rule** where a validated pricing rule fires, and on which side.
+
+**About the Rule column.** Two rules are live and both say UNDER. They are
+PRICING BIASES rather than model verdicts, so a rule can fire where the
+model has no opinion at all, and it does not need the projection to be
+right. The column is absent for markets no rule covers.
+
+**What these numbers are.** Everything in this table describes the
+market's own behaviour: what the number is, how far it has moved, through
+which channel, and how closely the books agree. None of it is a verdict on
+the bet. It is precise input for your own read of the game.
+
+**Sorting.** Rows are ranked by the size of the move in whichever channel
+that market actually uses, then by books moving apart rather than together.
+Rows with no comparable movement sink to the bottom.
+""")
 
     lm_season = st.selectbox("Season", module.available_seasons(),
                              index=len(module.available_seasons()) - 1, key="lm_season")
@@ -1005,8 +1066,31 @@ with tab_movement:
         line_word = "Prob%" if is_td else "Line"
 
         mv = mv.copy()
-        mv["abs_move"] = mv["line_move"].abs().fillna(0)
-        mv = mv.sort_values("abs_move", ascending=False).reset_index(drop=True)
+        # SORT ON THE DOMINANT CHANNEL. This used to key on line_move, the
+        # FanDuel line, which leaves every receptions row tied at +0.0 and
+        # sinks the props whose price actually moved.
+        _sdom_vals = (mv["move_dominant"].dropna()
+                      if "move_dominant" in mv.columns else [])
+        _sdom = str(_sdom_vals.iloc[0]) if len(_sdom_vals) else "line"
+        _mvcol = "mv_line_move" if _sdom == "line" else "price_move"
+        if _mvcol not in mv.columns:
+            _mvcol = "line_move"
+        mv["abs_move"] = pd.to_numeric(mv[_mvcol], errors="coerce").abs()
+
+        for _c in ("spread_then", "spread_now"):
+            if _c not in mv.columns:
+                mv[_c] = None
+        mv["widen"] = (pd.to_numeric(mv["spread_now"], errors="coerce")
+                       - pd.to_numeric(mv["spread_then"], errors="coerce"))
+
+        # NaN is not zero here. A NaN move means no book had a price at both
+        # ends of the window, which is UNKNOWN movement, and those rows go
+        # to the bottom rather than being mixed in with the genuinely flat
+        # ones as fillna(0) did.
+        mv["known"] = mv["abs_move"].notna().astype(int)
+        mv = mv.sort_values(["known", "abs_move", "widen"],
+                            ascending=[False, False, False],
+                            na_position="last").reset_index(drop=True)
 
         # Attach team/game, then filter. Filtering mv itself (rather than the
         # display grid) keeps the Bet?/Save path consistent: savable rows and
@@ -1055,6 +1139,21 @@ with tab_movement:
         _clipcol = "clip_line" if _dom == "line" else "clip_price"
         mv["bars_dom"] = mv[_barcol]
 
+        # FIRST CAPTURE as a timestamp, replacing a duration in hours.
+        # first_captured is FanDuel's earliest snapshot for this prop, which
+        # is not the movement window's anchor: the anchor is where three
+        # quarters of the BOOKS had a price and is usually later. "When did
+        # we first see this prop" is what a reader expects the label to
+        # mean, and the anchor's effect is already shown as "# of Books".
+        if "first_captured" in mv.columns:
+            _first_disp = (pd.to_datetime(mv["first_captured"],
+                                          errors="coerce", utc=True)
+                           .dt.tz_convert("America/New_York")
+                           .dt.strftime("%m/%d %I:%M%p"))
+            _first_disp = _first_disp.where(_first_disp.notna(), "")
+        else:
+            _first_disp = ""
+
         # BOOK AGREEMENT AS TEXT. Neither BarChartColumn nor
         # LineChartColumn renders in st.data_editor for a newly added
         # column, so the per-book group is summarised instead of drawn.
@@ -1079,7 +1178,9 @@ with tab_movement:
                 return ""          # unknown, not zero: no path at any book
             if abs(float(a) - float(z)) < 1e-9:
                 return "%g" % float(z)
-            return "%g > %g" % (float(a), float(z))
+            # "->" not ">". "0 > 2" reads as an inequality, and a false
+            # one, when it means "was 0, now 2".
+            return "%g -> %g" % (float(a), float(z))
 
         mv["spread_txt"] = mv.apply(_spreadtxt, axis=1)
 
@@ -1114,19 +1215,20 @@ with tab_movement:
             f"Latest {line_word}": mv["latest_line"],
             "Move": mv["line_move"],
             "Price": mv["price_txt"],
-            "Books": mv["n_books_window"],
+            "# of Books": mv["n_books_window"],
             "Spread": mv["spread_txt"],
-            "Since": mv["window_hours"],
-            "Line Captures": mv["snapshots"],
+            "First Capture": _first_disp,
+            "# of Captures": mv["snapshots"],
             "Trend": mv["series"],
-            "Captured": cap_disp,
+            "Latest Capture": cap_disp,
             "Rule": mv["player"].map(lambda p: rule_side.get(str(p), "")),
             "Bet?": False,
         })
         # Price is now TEXT, because it carries "flat" below the deadband,
         # so it is not coerced here.
+        # First Capture is a formatted timestamp now, so it is not coerced.
         for numcol in ["Proj", "Edge", f"Latest {line_word}", "Move",
-                       "Books", "Since"]:
+                       "# of Books"]:
             grid[numcol] = pd.to_numeric(grid[numcol], errors="coerce").astype("float64")
 
         # Drop the MODEL columns when this market has nothing to put in
@@ -1174,12 +1276,12 @@ with tab_movement:
                 f"Latest {line_word}": st.column_config.NumberColumn(f"Latest {line_word}", format="%.1f", width="small"),
                 "Move": st.column_config.NumberColumn("Move", format="%+.1f", width="small"),
                 "Price": st.column_config.TextColumn("Price", width="small"),
-                "Books": st.column_config.NumberColumn("Books", format="%d", width="small"),
+                "# of Books": st.column_config.NumberColumn("# of Books", format="%d", width="small"),
                 "Spread": st.column_config.TextColumn("Spread", width="small"),
-                "Since": st.column_config.NumberColumn("Since", format="%.0fh", width="small"),
+                "First Capture": st.column_config.TextColumn("First Capture", width="small"),
                 "vs. Model": st.column_config.TextColumn("vs. Model", width="small"),
-                "Line Captures": st.column_config.NumberColumn("Line Captures", format="%d", width="small"),
-                "Captured": st.column_config.TextColumn("Captured", width="small"),
+                "# of Captures": st.column_config.NumberColumn("# of Captures", format="%d", width="small"),
+                "Latest Capture": st.column_config.TextColumn("Latest Capture", width="small"),
                 "Bet?": st.column_config.CheckboxColumn("Bet?", width="small"),
             },
             key=f"movement_editor_{mkt_label}")
@@ -1203,7 +1305,8 @@ with tab_movement:
                         elif _a is None or abs(float(_a) - float(_z)) < 1e-9:
                             _cells.append("%g" % float(_z))
                         else:
-                            _cells.append("%g > %g" % (float(_a), float(_z)))
+                            _cells.append("%g -> %g"
+                                          % (float(_a), float(_z)))
                     _bb[_bname] = _cells
                 with st.expander(f"Book by book: {mkt_key} lines"):
                     st.caption(
@@ -1262,7 +1365,19 @@ with tab_movement:
                 picked = st.selectbox("Player", players_with_series, key=f"trend_pick_{mkt_label}")
                 row = mv[mv["player"] == picked].iloc[0]
                 series = row["series"]
-                chart_df = pd.DataFrame({line_word: series})
+                # INDEX FROM 1. Without an index Streamlit plots against
+                # the positional one, so three captures appear at 0, 1, 2
+                # and the reader has to translate. There is no capture zero.
+                #
+                # Not plotted against TIME on purpose: captures are unevenly
+                # spaced, so a time axis is more faithful to when things
+                # happened, but it also compresses a hundred captures'
+                # interesting final hour into a sliver. The table above
+                # carries First Capture and Latest Capture for the real
+                # times.
+                chart_df = pd.DataFrame(
+                    {line_word: series},
+                    index=pd.RangeIndex(1, len(series) + 1, name="Capture"))
                 st.line_chart(chart_df)
                 st.caption(f"{picked}: {len(series)} snapshot(s) captured, "
                            f"from {row['first_line']:.1f} to {row['latest_line']:.1f} {line_word.lower()}.")
@@ -1379,7 +1494,7 @@ the rule, returns by projection quintile run +10.0, +7.9, +12.7, +8.6, then
 **-11.7** percent in the top quintile. So the model is not picking a
 direction, it is identifying one bad bucket. It vetoes, it does not confirm.
 
-Both rules appear in the **Line Movement and Side Picker** tab, in the
+Both rules appear in the **Line Movement and Decisioning** tab, in the
 **Rule** column, with a weekly summary underneath.
 
 ---
@@ -1407,7 +1522,7 @@ enjoyment rather than income.
    receptions markets want the line plus both sides' odds. Anytime TD wants
    the American odds on its single side.
 3. Read the board as reference. No market shows a model edge.
-4. Go to **Line Movement and Side Picker** for the actual picks. The **Rule**
+4. Go to **Line Movement and Decisioning** for the actual picks. The **Rule**
    column is where a validated rule has fired.
 5. Save picks to the log, tick the ones you really bet, and the **Scorecard**
    follows them over time.
@@ -1441,7 +1556,7 @@ and still **includes the book's margin**, because a one sided market cannot
 have the margin removed cleanly. So it overstates the true probability, and the
 model reading lower than it is expected rather than a disagreement.
 
-**Rule** in the Line Movement and Side Picker tab shows UNDER where a
+**Rule** in the Line Movement and Decisioning tab shows UNDER where a
 validated rule has fired.
 
 **Edge, Side and Tier** are absent from every market. They were removed
