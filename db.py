@@ -828,6 +828,104 @@ def get_line_movement(season, week, market, user, sport="NFL",
     return pd.DataFrame(out)
 
 
+# The closing-line instrument, per plan item 1.9: the last capture in this
+# band before kickoff. Shared so the log and any promotion agree by
+# construction rather than by two matching literals.
+CLOSING_WINDOW_MIN = 20
+CLOSING_WINDOW_MAX = 90
+
+
+def get_player_closing_lines(player, market, seasons, user,
+                             sport="NFL", book=DEFAULT_BOOK):
+    """{(season, week): closing value} for one player, from `lines`.
+
+    The value is the LINE for two-sided markets and OVER_ODDS for
+    anytime_td, which has no line.
+
+    Selection is by DISTANCE TO KICKOFF, not by recency: the last capture
+    between CLOSING_WINDOW_MIN and CLOSING_WINDOW_MAX minutes before
+    kickoff. Taking the latest capture would select in-game rows, which are
+    latest by definition and carry a price that absorbed part of the
+    outcome.
+
+    Returns {} on any failure, so a display that depends on it degrades to
+    a blank column rather than taking a tab down.
+    """
+    import pandas as pd
+
+    key = _norm_name(player)
+    try:
+        client = get_authed_client(user)
+    except Exception as e:
+        _warn(f"Closing-line lookup could not authenticate: "
+              f"{type(e).__name__}: {e}")
+        return {}
+
+    cols = ("season,week,player,line,over_odds,captured_at,commence_time,"
+            "projection")
+    rows, page = [], 0
+    try:
+        while True:
+            res = (client.table("lines").select(cols)
+                   .eq("sport", sport)
+                   .eq("market", market)
+                   .eq("book", book)
+                   .in_("season", [int(s) for s in seasons])
+                   .order("id")
+                   .range(page * _PAGE, page * _PAGE + _PAGE - 1)
+                   .execute())
+            batch = res.data or []
+            rows.extend(batch)
+            if len(batch) < _PAGE:
+                break
+            page += 1
+            if page > 60:
+                break
+    except Exception as e:
+        _warn(f"Closing-line lookup failed for {market}: "
+              f"{type(e).__name__}: {e}")
+        return {}
+
+    if not rows:
+        return {}
+
+    df = pd.DataFrame(rows)
+    # Captured rows only. A hand-saved board carries a projection and its
+    # captured_at is whenever someone pressed save, so it would interleave
+    # with real captures.
+    df = _drop_saved_rows(df)
+    if df.empty:
+        return {}
+
+    df = df[df["player"].apply(_norm_name) == key]
+    if df.empty:
+        return {}
+
+    df["captured_at"] = pd.to_datetime(df["captured_at"], utc=True,
+                                       errors="coerce", format="mixed")
+    df["commence_time"] = pd.to_datetime(df["commence_time"], utc=True,
+                                         errors="coerce", format="mixed")
+    df = df[df["captured_at"].notna() & df["commence_time"].notna()]
+    if df.empty:
+        return {}
+
+    mins = (df["commence_time"] - df["captured_at"]).dt.total_seconds() / 60.0
+    df = df[(mins >= CLOSING_WINDOW_MIN) & (mins <= CLOSING_WINDOW_MAX)]
+    if df.empty:
+        return {}
+
+    field = "over_odds" if market == "anytime_td" else "line"
+    if field not in df.columns:
+        return {}
+    df = df.sort_values("captured_at")
+
+    out = {}
+    for s, w, v in zip(df["season"], df["week"], df[field]):
+        if pd.notna(w) and pd.notna(v):
+            out[(int(s), int(w))] = float(v)
+    return out
+
+
 def diagnose_lines(season, week, user, sport="NFL"):
     """Row counts, distinct captures and multi-snapshot player counts per market.
 

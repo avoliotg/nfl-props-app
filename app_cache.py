@@ -185,7 +185,12 @@ def _log_summary(market, seasons):
         return {}
     if summ is None or len(summ) == 0:
         return {}
-    keep = [c for c in ("n", "mean", "median", "gap", "lo", "hi", "seasons")
+    # season_min / season_max must be here. player_log._span_of reads them
+    # to build the "2025-2026" span in the log caption, and they were added
+    # to summarize_all after this list was written, so the caption rendered
+    # with a leading comma and no seasons.
+    keep = [c for c in ("n", "mean", "median", "gap", "lo", "hi",
+                        "seasons", "n_seasons", "season_min", "season_max")
             if c in summ.columns]
     return {k: {c: v[c] for c in keep} for k, v in summ[keep].iterrows()}
 
@@ -203,7 +208,7 @@ MODEL_TRAIN_MAX_FALLBACK = 2024
 
 
 @st.cache_data(ttl=TTL, show_spinner=False)
-def _player_log(market, join_name, seasons):
+def _player_log(market, join_name, seasons, _user=None):
     """One player's displayable game log. Empty frame on any failure.
 
     seasons MUST be a tuple: st.cache_data hashes its arguments.
@@ -267,6 +272,23 @@ def _player_log(market, join_name, seasons):
     except Exception:
         line_map = {}
 
+    # RECENT WEEKS from the LIVE table. The parquet is historical_lines and
+    # ends at week 2 of 2026; `lines` carries week 3 onward. Merged second,
+    # so the live value wins if the two ever overlap, which is the right
+    # precedence: `lines` is what the capture observed.
+    #
+    # db.get_player_closing_lines applies the 20-to-90-minute window. That
+    # is not a precaution: `lines` holds every capture including in-game
+    # ones, and the latest capture per prop-week would BE the contaminated
+    # row.
+    try:
+        live = db.get_player_closing_lines(join_name, market, list(seasons),
+                                           _user)
+        if live:
+            line_map.update(live)
+    except Exception:
+        pass
+
     # PROJECTIONS, only for seasons after the training cutoff. display_log
     # blanks the rest, but not asking for them saves a model fit per season.
     mod = mods.get(market)
@@ -297,9 +319,13 @@ def _player_log(market, join_name, seasons):
         return pd.DataFrame()
 
 
-def get_player_log(market, join_name, seasons):
-    """Cached game log for one player in one market. Empty frame if absent."""
-    return _player_log(market, join_name, tuple(seasons))
+def get_player_log(market, join_name, seasons, user=None):
+    """Cached game log for one player in one market. Empty frame if absent.
+
+    `user` is needed for the live closing-line read and is passed as _user
+    so st.cache_data does not hash it, matching _lines and _movement.
+    """
+    return _player_log(market, join_name, tuple(seasons), _user=user)
 
 
 def clear_all():
