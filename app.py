@@ -940,7 +940,13 @@ many books.
 
 **The columns**
 
+- **Proj** the model's projection for this player and week, from the same
+  model the Board uses. Blank where the player does not meet that model's
+  volume qualification, which is common for depth players. It is a second,
+  independent estimate rather than a verdict.
 - **Latest Line** FanDuel's number at the most recent capture.
+- **Diff** Proj minus Latest Line. Positive means the projection sits above
+  the line, so the model leans OVER.
 - **Move** FanDuel's line now, minus its line at the first capture. In
   yards, or receptions.
 - **Price** average change in the devigged two-sided probability across
@@ -1139,6 +1145,28 @@ Rows with no comparable movement sink to the bottom.
         _clipcol = "clip_line" if _dom == "line" else "clip_price"
         mv["bars_dom"] = mv[_barcol]
 
+        # MODEL PROJECTION, joined from the model rather than read off the
+        # row. raw_projection is null on every captured row by design:
+        # _drop_saved_rows keeps only projection IS NULL rows so that
+        # hand-saved boards cannot interleave with real captures. So the
+        # projection has to come from project_week, cached, resolved to THIS
+        # market's own module. rushing and qb_rushing resolve differently on
+        # purpose, because these rows are already split by split_qb_rushing.
+        _projmap = app_cache.get_projections(lm_season, lm_week, mkt_label)
+        if _projmap:
+            _pkeys = mv["player"].map(db._norm_name)
+            mv["proj_model"] = _pkeys.map(_projmap)
+        else:
+            mv["proj_model"] = None
+        _line_num = pd.to_numeric(mv["latest_line"], errors="coerce")
+        _proj_num = pd.to_numeric(mv["proj_model"], errors="coerce")
+        # Positive Diff means the projection sits ABOVE the line, so the
+        # model leans OVER. anytime_td's projection is a probability and its
+        # "line" an implied one, so a difference there would be meaningless;
+        # that market has no line column anyway and the empty-column drop
+        # removes both.
+        mv["proj_diff"] = (_proj_num - _line_num) if not is_td else None
+
         # FIRST CAPTURE as a timestamp, replacing a duration in hours.
         # first_captured is FanDuel's earliest snapshot for this prop, which
         # is not the movement window's anchor: the anchor is where three
@@ -1209,7 +1237,8 @@ Rows with no comparable movement sink to the bottom.
             "Game": mv["Game"],
             "Tier": mv["latest_tier"].map(lambda t: TIER_EMOJI.get(t, "—")),
             "vs. Model": mv["toward_away"].map(lambda t: TA_EMOJI.get(t, "—")),
-            "Proj": mv["raw_projection"],
+            "Proj": mv["proj_model"],
+            "Diff": mv["proj_diff"],
             "Edge": mv["latest_edge"],
             "Side": mv["latest_side"].replace("", "—") if not is_td else "—",
             f"Latest {line_word}": mv["latest_line"],
@@ -1227,7 +1256,7 @@ Rows with no comparable movement sink to the bottom.
         # Price is now TEXT, because it carries "flat" below the deadband,
         # so it is not coerced here.
         # First Capture is a formatted timestamp now, so it is not coerced.
-        for numcol in ["Proj", "Edge", f"Latest {line_word}", "Move",
+        for numcol in ["Proj", "Diff", "Edge", f"Latest {line_word}", "Move",
                        "# of Books"]:
             grid[numcol] = pd.to_numeric(grid[numcol], errors="coerce").astype("float64")
 
@@ -1237,7 +1266,10 @@ Rows with no comparable movement sink to the bottom.
         # item J1), so Tier, vs. Model, Proj, Edge and Side rendered as a
         # wall of "None" and "—". An empty column reads as a broken value
         # rather than an absent one. Any column with a real value is kept.
-        for _c in ["Tier", "vs. Model", "Proj", "Edge", "Side", "Rule"]:
+        # Diff is dropped with Proj: a difference column with no projection
+        # to difference is worse than absent.
+        for _c in ["Tier", "vs. Model", "Proj", "Diff", "Edge", "Side",
+                   "Rule"]:
             if _c not in grid.columns:
                 continue
             _vals = grid[_c].dropna()
@@ -1270,6 +1302,7 @@ Rows with no comparable movement sink to the bottom.
                 "Game": st.column_config.TextColumn("Game", width="small"),
                 "Tier": st.column_config.TextColumn("Tier", width="small"),
                 "Proj": st.column_config.NumberColumn("Proj", format="%.1f", width="small"),
+                "Diff": st.column_config.NumberColumn("Diff", format="%+.1f", width="small"),
                 "Edge": st.column_config.NumberColumn("Edge", format="%+.1f", width="small"),
                 "Side": st.column_config.TextColumn("Side", width="small"),
                 "Trend": st.column_config.LineChartColumn(f"{line_word} Trend", width="small"),

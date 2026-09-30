@@ -104,6 +104,56 @@ def get_line_movement(season, week, market, user):
     return _movement(season, week, market, version(), user)
 
 
+@st.cache_data(ttl=TTL, show_spinner=False)
+def _projections(season, week, market):
+    """market key -> {normalised player name: projection}.
+
+    Takes the market KEY rather than a module because st.cache_data hashes
+    its arguments and a module object is not usefully hashable.
+
+    rushing and qb_rushing resolve to DIFFERENT modules on purpose. The Line
+    Movement rows are already split by split_qb_rushing, so a running back
+    must be looked up in rushing's board and a quarterback in qb_rushing's.
+    Crossing them would put RB projections on QBs.
+
+    Returns {} rather than raising when a market has no board yet, so a tab
+    that shows movement fine does not go down because a model could not fit.
+    """
+    import db
+    from models import (receiving, receptions, rushing, qb_passing,
+                        anytime_td, qb_rushing)
+    mods = {"receiving": receiving, "receptions": receptions,
+            "rushing": rushing, "qb_passing": qb_passing,
+            "anytime_td": anytime_td, "qb_rushing": qb_rushing}
+    mod = mods.get(market)
+    if mod is None or not hasattr(mod, "project_week"):
+        return {}
+    try:
+        board = mod.project_week(season, week)
+    except Exception:
+        return {}
+    if board is None or len(board) == 0:
+        return {}
+    if "player_display_name" not in board.columns \
+            or "projection" not in board.columns:
+        return {}
+    out = {}
+    for name, proj in zip(board["player_display_name"], board["projection"]):
+        if name is None:
+            continue
+        out[db._norm_name(name)] = proj
+    return out
+
+
+def get_projections(season, week, market):
+    """Cached {normalised name: projection} for one market and week.
+
+    Not keyed on the user: a projection is a property of the model and the
+    week, not of who is looking at it, unlike the lines reads above.
+    """
+    return _projections(season, week, market)
+
+
 def clear_all():
     """Hard reset, for a debug button. Prefer bump() in normal use."""
     _lines.clear()
