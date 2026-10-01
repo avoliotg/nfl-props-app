@@ -62,11 +62,9 @@ def _login_backdrop(path="assets/opal_banner.jpg", top=0.38, bottom=0.55):
     )
 
 ADMIN_EMAIL = "avoliotg@gmail.com"
-OPAL_BANNER = ("📣 **Note from OpalScales:** Be wary of huge edges early in the season, "
-               "they're often the model's early season blind spots, not real value. See the Guide for details.")
+OPAL_BANNER = ("📣 **Note from OpalScales:** The way in which decisioning works has changed. It no longer operates on an edges system. Read the Help menu on the Line Movement and Decisioning tab to learn more.")
 
-WELCOME_BANNER = ("👋 **New here?** There's a lot of data on this page. Head to the "
-                   "**📖 Guide** tab first, it explains what everything means and how to use it.")
+WELCOME_BANNER = ("👋 **Have fun!** There's a ton of data here and betting lines update every 4 hours.")
 
 st.set_page_config(page_title="NFL Props", layout="wide")
 # ---------- Login gate ----------
@@ -984,6 +982,22 @@ season is out of sample. Tick two players to compare them.
 - **Trend** FanDuel's line over those captures.
 - **Latest Capture** when the most recent snapshot was taken.
 - **Rule** where a validated pricing rule fires, and on which side.
+
+**Anytime TD works differently, and the board shows it.** That market has
+no line and only one side of a price, so three columns are absent by
+construction rather than broken: **Price**, **Spread** and **# of Books**
+all need a two-sided devigged price, and there is none to compute. In their
+place, **Scored%** replaces Med and Mean: the outcome is 0 or 1, so a median
+is 0 or 1 and says nothing, while the mean IS the share of games in which
+the player scored a rushing or receiving touchdown. Passing touchdowns do
+not count, because the passer is not the scorer. Rows are ranked by the
+market's implied probability rather than by movement, since there is no line
+to move.
+
+One caution specific to that board. **Latest Prob%** comes from a one-sided
+price, which cannot have the book's margin removed, so it overstates the
+true chance. A **Proj%** below it is the expected state and not by itself a
+disagreement.
 
 **About the Rule column.** Two rules are live and both say UNDER. They are
 PRICING BIASES rather than model verdicts, so a rule can fire where the
