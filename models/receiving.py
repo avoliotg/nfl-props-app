@@ -10,7 +10,8 @@ from sklearn.linear_model import LinearRegression
 
 SEASONS = [2022, 2023, 2024, 2025, 2026]
 LEAN_FEATS = ["target_share_roll", "targets_roll", "snap_roll",
-              "ypt_roll", "team_spread", "total_line"]
+              "ypt_roll", "receiving_air_yards_roll",
+              "team_spread", "total_line"]
 
 # Per-feature EWMA halflives, in games. Replaces rolling(6).mean().
 #
@@ -31,6 +32,13 @@ HL = {
     "snap_roll": 2.0,
     "ypt_roll": 12.0,
     "receiving_yards_roll": 6.0,   # computed but not in LEAN_FEATS
+    # ADDED 2026-10-01, pre-registered. 2.0 by analogy with the other
+    # USAGE features above, not by a sweep: target_share_roll and
+    # snap_roll are usage and sit at 2.0, targets_roll and ypt_roll carry
+    # efficiency and sit at 12.0. Air yards is usage. Choosing the
+    # halflife after seeing the result would be selecting a specification
+    # on the test data.
+    "receiving_air_yards_roll": 2.0,
 }
 
 # gap (abs yards) -> historical hit rate anchors from proxy-line testing
@@ -43,7 +51,11 @@ def build_dataset():
     rec = ps[ps["position"].isin(["WR", "TE", "RB"])].copy()
     rec = rec.sort_values(["player_id", "season", "week"]).reset_index(drop=True)
 
-    for col in ["receiving_yards", "targets", "target_share"]:
+    # receiving_air_yards added 2026-10-01. The loop derives the feature
+    # name as f"{col}_roll" and reads its halflife from HL, so one name
+    # here is the whole computation for the played-week path.
+    for col in ["receiving_yards", "targets", "target_share",
+                "receiving_air_yards"]:
         hl = HL[f"{col}_roll"]
         rec[f"{col}_roll"] = (rec.groupby("player_id")[col]
                               .transform(lambda s, h=hl: s.shift(1)
@@ -195,6 +207,13 @@ def build_upcoming_week(season, week):
             "target_share_roll": _ewm_last(g, "target_share", "target_share_roll"),
             "ypt_roll": _ewm_last(g, "ypt_game", "ypt_roll"),
             "snap_roll": _ewm_last(g, "offense_pct", "snap_roll"),
+            # MUST MIRROR build_dataset's loop. _ewm_last's docstring is
+            # explicit that a divergence here is train/serve skew, which
+            # produces plausible-looking wrong numbers rather than an
+            # error. Adding the feature to one path and not the other is
+            # precisely that failure.
+            "receiving_air_yards_roll": _ewm_last(
+                g, "receiving_air_yards", "receiving_air_yards_roll"),
             "player_display_name": g.iloc[-1]["player_display_name"],
         })
     bridged = (prior.groupby("player_id", group_keys=False)

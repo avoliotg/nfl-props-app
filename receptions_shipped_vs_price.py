@@ -91,13 +91,33 @@ import mc_pricing
 import recency_test as rt
 from models import data_utils
 
+# DEFAULT, rebound by main() from --market. Left as receptions so the
+# existing invocation is unchanged and gate_shipped_vs_price.py keeps
+# working as the regression check on this very patch.
 MARKET = "receptions"
 DEVIG_METHOD = "additive"     # equals shin for a two-outcome market
 EPS = 1e-12
 
-# From market_calibration.py, FanDuel receptions, all seasons.
-PUB_OVER_RATE = 0.4720
-PUB_BOOK_LOGLOSS = 0.68371
+# PER-MARKET published figures, from market_calibration.py on FanDuel, all
+# seasons. These were previously two bare constants for receptions, which
+# would have been compared against another market's rows without complaint
+# and printed a reassuring difference that meant nothing.
+#
+# A None book log loss means NOTHING HAS BEEN PUBLISHED for that market, and
+# gate() says so rather than comparing against a number it does not have. A
+# gate with an invented reference is worse than an absent one.
+#
+# receiving's over rate is from the eval_harness run of 2026-09-30, FanDuel,
+# 8,677 rows: 0.4898. Its book log loss has not been published, hence None.
+PUB = {
+    "receptions": {"over_rate": 0.4720, "book_logloss": 0.68371},
+    "receiving": {"over_rate": 0.4898, "book_logloss": None},
+    "rushing": {"over_rate": 0.4705, "book_logloss": None},
+    "qb_passing": {"over_rate": 0.5060, "book_logloss": None},
+    "qb_rushing": {"over_rate": 0.4862, "book_logloss": None},
+}
+PUB_OVER_RATE = PUB["receptions"]["over_rate"]
+PUB_BOOK_LOGLOSS = PUB["receptions"]["book_logloss"]
 RATE_TOL = 0.004
 
 
@@ -355,12 +375,26 @@ def gate(g):
         print("  ABORT: empty frame, nothing to gate.")
         sys.exit(1)
     mkt = logloss_vec(g["book_p"], g["over"])
+    _pub = PUB.get(MARKET, {})
+    _pub_ll = _pub.get("book_logloss")
+    _pub_rate = _pub.get("over_rate")
     print(f"  book_p log loss on these rows   {mkt.mean():.5f}")
-    print(f"  published (larger population)   {PUB_BOOK_LOGLOSS:.5f}")
-    print(f"  difference                      {mkt.mean() - PUB_BOOK_LOGLOSS:+.5f}")
+    if _pub_ll is None:
+        # NO REFERENCE. Printing a difference against another market's
+        # figure, or against nothing, would read as a passed check.
+        print(f"  published for {MARKET}: NONE. This market has no "
+              f"published book log loss, so there is nothing to reproduce "
+              f"and the figure above is a measurement rather than a check.")
+    else:
+        print(f"  published (larger population)   {_pub_ll:.5f}")
+        print(f"  difference                      "
+              f"{mkt.mean() - _pub_ll:+.5f}")
     rate = g["over"].mean()
-    print(f"  over rate {rate:.4f} vs published {PUB_OVER_RATE:.4f}")
-    if abs(rate - PUB_OVER_RATE) > RATE_TOL:
+    if _pub_rate is None:
+        print(f"  over rate {rate:.4f}, no published rate for {MARKET}")
+        return mkt
+    print(f"  over rate {rate:.4f} vs published {_pub_rate:.4f}")
+    if abs(rate - _pub_rate) > RATE_TOL:
         print()
         print("  NOTE: the over rate differs by more than the tolerance. This")
         print("  population is the intersection with walk-forward")
@@ -531,6 +565,10 @@ def main():
     ap.add_argument("--cache", default=None)
     ap.add_argument("--refresh", action="store_true")
     ap.add_argument("--book", default="fanduel")
+    ap.add_argument("--market", default="receptions",
+                    help="Which market to test. MARKET is a module global "
+                         "read inside the scoring functions, so it is "
+                         "rebound here before any of them run.")
     ap.add_argument("--boot", type=int, default=2000)
     args = ap.parse_args()
 
@@ -541,9 +579,18 @@ def main():
     else:
         seasons = [2025]
 
+    # REBIND BEFORE ANYTHING RUNS. Every use of MARKET is inside a
+    # function, so assigning the global here reaches all eight of them.
+    global MARKET
+    MARKET = args.market
+
     print("=" * 92)
-    print("RECEPTIONS: does the SHIPPED price beat the devigged market price?")
+    print(f"{MARKET.upper()}: does the SHIPPED price beat the devigged "
+          f"market price?")
     print(f"  seasons {seasons}   book {args.book}   devig {DEVIG_METHOD}")
+    if PUB.get(MARKET, {}).get("book_logloss") is None:
+        print(f"  NOTE: no published book log loss for {MARKET}, so the "
+              f"reproduction gate below reports rather than checks.")
     print("=" * 92)
 
     g = load(args, seasons)
