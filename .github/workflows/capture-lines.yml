@@ -14,35 +14,54 @@ on:
     # Base movement grid: every 4 hours, every day.
     - cron: "23 1,5,9,13,17,21 * * *"
     #
-    # Sunday afternoon closes. RETIMED 2026-09-28. One entry per kickoff
-    # cluster, each placed at the EARLY edge of the 20-to-90-minute window
-    # rather than the middle.
+    # Sunday afternoon closes. REDUNDANT, as of 2026-10-08. Three entries
+    # per kickoff cluster, 30 minutes apart.
     #
-    # WHY. Scheduled Actions runs drift late and never early, so a nominal
-    # time in the middle of the window spends half its slack before the run
-    # even happens. The old pair was 16:23 and 19:23 UTC, at 37 and 42
-    # minutes before their kickoffs, which tolerated 17 and 22 minutes of
-    # drift. Observed drift on 2026-09-27 was 12, 50 and 60 minutes on three
-    # separate runs, so the 19:23 entry fired 50 late at 20:13 UTC, eight
-    # minutes AFTER the 4:05 kickoff. Four of the five week 3 games with no
-    # closing snapshot were lost that way.
+    # WHY PLACEMENT FAILED AND REDUNDANCY REPLACES IT.
     #
-    # Placed at the early edge instead, the same three kickoff clusters
-    # tolerate 60, 65 and 65 minutes:
+    # The 2026-09-28 version placed one entry per cluster at the EARLY edge
+    # of the 20-to-90-minute window, claiming 60 to 65 minutes of drift
+    # tolerance. Measured on 2026-10-04:
     #
-    #   15:40 UTC  11:40am ET   80 min before the 1pm slate
-    #   18:40 UTC   2:40pm ET   85 min before 4:05
-    #   19:00 UTC   3:00pm ET   85 min before 4:25
+    #   scheduled   fired     drift
+    #   15:40       16:54     +74 min
+    #   18:40       18:47      +7 min
+    #   19:00       20:15     +75 min
+    #   21:23       22:10     +47 min
     #
-    # Splitting 4:05 and 4:25 across two entries is the point. No single run
-    # can sit 85 minutes ahead of both, and one run covering both caps out
-    # at 45 minutes of tolerance.
+    # Two entries exceeded the claimed tolerance. The 15:40 run landed SIX
+    # MINUTES before a 17:00 UTC kickoff, so the entire 1pm slate fell in
+    # the 0-to-20 band: 2,336 rows there against 188 in the window. The
+    # 19:00 run fired after its kickoff and was correctly skipped.
     #
-    # Drift beyond about an hour is not fixable by scheduling. It now costs
-    # a missing snapshot rather than a contaminated one, because
-    # live_capture.py skips events that have already started.
-    - cron: "40 15,18 * * 0"
-    - cron: "0 19 * * 0"
+    # Week 4 promoted 165 rows against week 3's 1,821, and week 3 only
+    # worked because the OLD 16:23 target happened to drift into the middle.
+    #
+    # The early edge was the wrong idea in principle. It maximises
+    # tolerance for a late run while guaranteeing that an ON-TIME run is
+    # too early. With a 70-minute window and drift ranging 7 to 75 minutes,
+    # no single entry can cover the range.
+    #
+    # Three entries 30 minutes apart always land one inside, and
+    # promote_closing.py takes the LAST capture in the window, so extra
+    # captures only widen its choice.
+    #
+    #   1pm ET  = 17:00 UTC, window 15:30-16:40 -> 15:10, 15:40, 16:10
+    #   4:05 ET = 20:05 UTC, window 18:35-19:45 -> 18:15, 18:45, 19:15
+    #   4:25 ET = 20:25 UTC, window 18:55-20:05 -> 18:45, 19:15, 19:45
+    #
+    # The 4:05 and 4:25 windows overlap by 50 minutes, so 18:45 and 19:15
+    # serve both and only 19:45 is specific to 4:25.
+    #
+    # COST: about 65 credits per run, 13 events x 5 markets. Four extra
+    # Sunday runs is roughly 800 credits a month against 100,000 available.
+    - cron: "10 15 * * 0"
+    - cron: "40 15 * * 0"
+    - cron: "10 16 * * 0"
+    - cron: "15 18 * * 0"
+    - cron: "45 18 * * 0"
+    - cron: "15 19 * * 0"
+    - cron: "45 19 * * 0"
     #
     # Prime time closes. 23:23 UTC is 7:23pm ET, about 52 minutes before an
     # 8:15pm kickoff. Thursday, Sunday and Monday.
@@ -71,9 +90,15 @@ on:
 # Off-the-hour minutes are deliberate. Scheduled Actions runs are best effort
 # and the top of the hour is the most congested slot, so :23 reduces drift.
 
-concurrency:
-  group: capture-lines
-  cancel-in-progress: false
+# CONCURRENCY REMOVED 2026-10-08. A group with cancel-in-progress false
+# QUEUES runs behind each other, so on a Sunday a collision between the
+# base grid and a targeted close made the second run wait for the first.
+# With seven Sunday entries the collision risk is much higher, and queueing
+# is worse than running two captures at once.
+#
+# Duplicate captures are harmless: every row carries its own captured_at,
+# and promote_closing.py selects one row per prop-book regardless of how
+# many captures exist.
 
 jobs:
   capture:
@@ -88,6 +113,9 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.14"
+          # Cold-installing pandas and nflreadpy costs minutes on every
+          # run, and every minute is drift on a time-critical capture.
+          cache: pip
 
       - name: Install dependencies
         run: |
