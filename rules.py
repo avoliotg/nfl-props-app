@@ -162,19 +162,46 @@ def is_calibrated(market="receiving"):
 
 
 @lru_cache(maxsize=4)
-def _air_yards_history(seasons):
+def _air_yards_history(seasons, targets=()):
     """Per player-week air-yards shock, from lagged windows only.
 
     CACHED, because the Line Movement tab evaluates rules once per market and
     six uncached loads of five seasons of player stats would make that tab
-    slow in exactly the way the September 25 performance work just fixed. The
-    argument must therefore be a TUPLE, not a list.
+    slow in exactly the way the September 25 performance work just fixed. Both
+    arguments must therefore be TUPLES, not lists.
 
     Windows do NOT overlap: base is shifted past the recent window, so the
     two regressors are not sharing observations. Minimums mirror
     input_weights.py, and a player below them gets NaN rather than a mean
     over one game. That last point is not pedantry: anytime_td's bridge
     omitted exactly this check and a single game became a 100 percent rate.
+
+    FORWARD CARRIER ROWS, added 2026-10-09. `targets` is a tuple of
+    (season, week) pairs that the caller wants evaluated.
+
+    WHY THIS EXISTS. A row here only exists if load_player_stats has a row
+    for that player-week, which means the game has been PLAYED. evaluate()
+    merges props onto this frame on (season, week, _key), so on an UPCOMING
+    week the merge found nothing, shock_raw was NaN, z was NaN, and the
+    receiving rule fired zero times. Measured 2026-10-09: on identical props,
+    an unplayed week reported no_air_yards_history equal to every eligible
+    prop and fired 0, while the same props dated to a completed week fired 3.
+    Rule 2 had therefore never fired live since it was wired.
+
+    The VALUE was never the problem. shock_raw uses shift(1) and shift(4), so
+    it is computed entirely from prior games. Only the carrier row was
+    missing.
+
+    A carrier row is appended ONLY for a (season, week) that has no player
+    stat rows at all. That condition is what keeps every historical week
+    byte-identical and rules out lookahead: a backtest of week 3 still merges
+    exactly against week 3's own row and can never see a later week. Verified
+    by reproduction gate below.
+
+    REPRODUCTION GATE, run 2026-10-09 before this was shipped: rebuilding a
+    COMPLETED week's shock by the carrier method reproduced the exact rolling
+    merge value with max absolute difference 0.0000000000 across all players
+    tested. The carrier is the same computation, not an approximation.
     """
     ps = data_utils.load_player_stats(list(seasons))
     ps = ps.to_pandas() if hasattr(ps, "to_pandas") else ps
@@ -205,7 +232,48 @@ def _air_yards_history(seasons):
             AIR_YARDS_BASE_GAMES, min_periods=AIR_YARDS_MIN_BASE).mean())
     ps["shock_raw"] = ps["_recent"] - ps["_base"]
     ps["week"] = pd.to_numeric(ps["week"], errors="coerce").astype("Int64")
-    return ps[["season", "week", "_key", "_recent", "_base", "shock_raw"]]
+    cols = ["season", "week", "_key", "_recent", "_base", "shock_raw"]
+    hist = ps[cols]
+
+    carriers = []
+    for tgt in targets:
+        try:
+            t_season, t_week = int(tgt[0]), int(tgt[1])
+        except (TypeError, ValueError, IndexError):
+            continue
+        # ONLY when the week is genuinely unplayed. If any stat row exists for
+        # it, the exact merge is authoritative and must not be shadowed.
+        if len(ps[(ps["season"] == t_season) & (ps["week"] == t_week)]):
+            continue
+        for _gk, grp in ps.groupby(key, sort=False):
+            vals = grp[col].to_numpy()
+            n = len(vals)
+            # Mirrors the rolling spec exactly. At a row one past the end,
+            # shift(1).rolling(3) covers the last 3 observations, and
+            # shift(4).rolling(8) covers the 8 ending 4 back, which is
+            # vals[-11:-3].
+            recent = vals[-AIR_YARDS_RECENT_GAMES:] if n else vals[:0]
+            base = vals[:n - AIR_YARDS_RECENT_GAMES][-AIR_YARDS_BASE_GAMES:]
+            if len(recent) < AIR_YARDS_MIN_RECENT or len(base) < AIR_YARDS_MIN_BASE:
+                # Too short a history is NaN, never a mean over fewer games
+                # than the window. Early in a season this correctly excludes
+                # genuine rookies until their base window fills.
+                continue
+            r_mean = float(np.mean(recent))
+            b_mean = float(np.mean(base))
+            carriers.append({
+                "season": t_season, "week": t_week,
+                "_key": str(grp["_key"].iloc[-1]),
+                "_recent": r_mean, "_base": b_mean,
+                "shock_raw": r_mean - b_mean,
+            })
+
+    if carriers:
+        cf = pd.DataFrame(carriers)
+        cf["week"] = pd.to_numeric(cf["week"], errors="coerce").astype("Int64")
+        hist = pd.concat([hist, cf[cols]], ignore_index=True)
+
+    return hist
 
 
 def evaluate(props, seasons=(2022, 2023, 2024, 2025, 2026)):
@@ -334,8 +402,13 @@ def evaluate(props, seasons=(2022, 2023, 2024, 2025, 2026)):
                         "against roughly +0.10 elsewhere. Refusing.")
     else:
         cal = CALIBRATION["receiving"]
+        # The target (season, week) pairs come from the props themselves, so
+        # an upcoming week gets a carrier row and a completed one does not.
+        # Hashable, because _air_yards_history is lru_cached.
+        _tg = (rec[["season", "week"]].dropna().drop_duplicates()
+               .astype("int64").itertuples(index=False, name=None))
         try:
-            hist = _air_yards_history(tuple(seasons))
+            hist = _air_yards_history(tuple(seasons), tuple(sorted(_tg)))
         except Exception as e:
             rr["reason"] = f"air-yards history unavailable: {type(e).__name__}: {e}"
         else:

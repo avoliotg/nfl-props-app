@@ -320,6 +320,11 @@ def main():
     ap.add_argument("--skip-gate", action="store_true",
                     help="run without the rushing control. Results are not "
                          "comparable to the published rule.")
+    ap.add_argument("--by-season", action="store_true",
+                    help="print the control cell broken out by season. "
+                         "Descriptive only: a single season is a few hundred "
+                         "bets at most and the current one far fewer, so its "
+                         "interval is far too wide to judge the rule by.")
     args = ap.parse_args()
     rng = np.random.default_rng(20260928)
 
@@ -361,6 +366,26 @@ def main():
             print("  and whether the published figure used these seasons.")
             sys.exit(1)
         print("  GATE PASSED")
+
+        if args.by_season:
+            print()
+            print("  BY SEASON, line <= %.1f, FanDuel. Descriptive only."
+                  % CONTROL_CUT)
+            print("  %6s %7s %7s %11s %9s %9s"
+                  % ("season", "n", "games", "under rate", "ROI", "clus SE"))
+            for yr in sorted(s["season"].unique()):
+                ss = s[s["season"] == yr]
+                if not len(ss):
+                    continue
+                r_ = float(ss["payout"].mean())
+                se_ = clustered_se(ss["payout"], ss["_game"])
+                wr = float((ss["payout"] > 0).mean())
+                print("  %6s %7d %7d %11.4f %+9.4f %9.4f"
+                      % (yr, len(ss), ss["_game"].nunique(), wr, r_, se_))
+            print()
+            print("  A season's clustered SE above is typically 0.04 to 0.05,")
+            print("  and the current partial season's is far larger, so these")
+            print("  rows move a long way on noise alone.")
 
     found = []
     for m in markets:

@@ -92,6 +92,23 @@ def _secrets():
         return {}
 
 
+def _first(env, sec, *names):
+    """First non-empty value for any of `names`, environment before secrets.
+
+    Checks every name in both sources rather than pairing one name to one
+    source, which is the bug this replaced.
+    """
+    for src in (env, sec):
+        for n in names:
+            v = src.get(n)
+            if v is None:
+                continue
+            v = str(v).strip()
+            if v:
+                return v
+    return ""
+
+
 def get_api_key(sec):
     key = os.environ.get("ODDS_API_KEY", "").strip()
     if key:
@@ -183,22 +200,37 @@ def save_ledger(led):
 # -------------------------------------------------------------- season layout
 
 def season_snapshot_dates(season, sport=NFL):
-    """Weekly timestamps at which to ask 'which games existed then'.
+    """Timestamps at which to ask 'which games existed then'.
 
     For the NFL a season labelled 2025 runs from early September 2025 into
-    mid-February 2026. Wednesday is used because books have posted the week's
-    props by then and it predates most movement, which makes it a reasonable
-    'opening' timestamp.
+    mid-February 2026. Weekly is right there: the whole slate is posted days
+    ahead, so one call per week sees every game.
+
+    NOTE: the anchor is September 1 plus multiples of 7, so the weekday varies
+    by season (Monday in 2025, Friday in 2023). An earlier version of this
+    docstring claimed Wednesday. It is not Wednesday. Nothing depends on the
+    weekday for 'closing', which is derived from each event's commence_time in
+    targets_for, but 'opening' snapshots inherit this date and so sit at a
+    different point in the week from season to season.
+
+    For the NHL weekly stepping is WRONG. Hockey plays nearly every night, so
+    a snapshot only sees the games posted at that moment. Stepping weekly over
+    2024-25 enumerated 396 of 1,312 games, clustered on Tuesdays and
+    Wednesdays, which omits Saturday's slate entirely. Daily stepping costs 1
+    credit per call, roughly 200 for a regular season, and removes the
+    day-of-week bias.
     """
     if sport == NFL:
         start = datetime(season, 9, 1, 18, 0, tzinfo=timezone.utc)
-        weeks = 24  # regular season plus playoffs through the Super Bowl
+        step_days = 7
+        n_steps = 24  # regular season plus playoffs through the Super Bowl
     else:
         start = datetime(season, 10, 1, 18, 0, tzinfo=timezone.utc)
-        weeks = 30
+        step_days = 1
+        n_steps = 200  # Oct 1 to roughly Apr 18, regular season only
     out = []
-    for i in range(weeks):
-        d = start + timedelta(days=7 * i)
+    for i in range(n_steps):
+        d = start + timedelta(days=step_days * i)
         if d < PROPS_AVAILABLE_FROM:
             continue
         if d > datetime.now(timezone.utc):
@@ -210,8 +242,12 @@ def season_snapshot_dates(season, sport=NFL):
 def enumerate_events(api, sport, season):
     """Every event in the season, with the snapshot date it first appeared.
 
-    Costs 1 credit per weekly call. The first appearance date doubles as the
-    'opening' timestamp for that game.
+    Costs 1 credit per call, one call per entry in season_snapshot_dates. The
+    first appearance date doubles as the 'opening' timestamp for that game.
+
+    Prints the kickoff-weekday distribution at the end, because an enumeration
+    that misses a weekday is the failure mode this function has already had
+    once on hockey.
     """
     events = {}
     for d in season_snapshot_dates(season, sport):
@@ -233,8 +269,22 @@ def enumerate_events(api, sport, season):
                 "opening_date": data.get("timestamp") or iso,
             }
             new += 1
-        print(f"    {iso}: {len(rows):>3} events, {new:>3} new "
-              f"(running total {len(events)})")
+        if new:
+            print(f"    {iso}: {len(rows):>3} events, {new:>3} new "
+                  f"(running total {len(events)})")
+    dow = {}
+    for e in events.values():
+        ct = e.get("commence_time") or ""
+        try:
+            t = datetime.fromisoformat(ct.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        k = t.strftime("%a")
+        dow[k] = dow.get(k, 0) + 1
+    if dow:
+        order = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+        parts = " ".join(f"{k} {dow[k]}" for k in order if k in dow)
+        print(f"  events by kickoff weekday: {parts}")
     return events
 
 
@@ -320,10 +370,22 @@ def supa_client(sec):
         print("  missing Supabase credentials")
         sys.exit(1)
     client = create_client(url, key)
-    email = os.environ.get("OPAL_EMAIL") or sec.get("ADMIN_EMAIL") or ""
+
+    # Sign in with a real user session rather than using the anon key alone.
+    # historical_lines.user_id is NOT NULL and defaults to auth.uid(), so an
+    # unauthenticated client cannot insert at all.
+    #
+    # Resolve from the environment first, so a shell variable can override for
+    # a one-off, then from secrets.toml. ADMIN_EMAIL is accepted as a legacy
+    # name: an earlier version of this function looked for OPAL_EMAIL only in
+    # the environment and ADMIN_EMAIL only in secrets, which meant a
+    # secrets.toml using OPAL_EMAIL prompted interactively every run.
+    email = _first(os.environ, sec, "OPAL_EMAIL", "ADMIN_EMAIL")
+    pw = _first(os.environ, sec, "OPAL_PASSWORD", "ADMIN_PASSWORD")
     if not email:
         email = input("Supabase email: ").strip()
-    pw = os.environ.get("OPAL_PASSWORD") or getpass("Supabase password (hidden): ")
+    if not pw:
+        pw = getpass("Supabase password (hidden): ")
     res = client.auth.sign_in_with_password({"email": email, "password": pw})
     if not res.user:
         print("  Supabase login failed")
@@ -379,10 +441,20 @@ def main():
                     help="stop after spending this many credits this run")
     ap.add_argument("--limit-events", type=int, default=None,
                     help="only process the first N events, for a cheap test")
+    ap.add_argument("--spread-events", type=int, default=None,
+                    help="process N events spread evenly across the season, "
+                         "for a representative subsample rather than a smoke "
+                         "test. Mutually exclusive with --limit-events")
     args = ap.parse_args()
 
     if not (args.dry_run or args.run):
         print("pass --dry-run or --run")
+        sys.exit(1)
+
+    if args.limit_events and args.spread_events:
+        print("--limit-events and --spread-events are mutually exclusive.")
+        print("  --limit-events N  first N by kickoff, a cheap smoke test")
+        print("  --spread-events N N spread across the season, a subsample")
         sys.exit(1)
 
     sport = NFL if args.sport == "nfl" else NHL
@@ -411,6 +483,24 @@ def main():
         keys = sorted(events, key=lambda k: events[k]["commence_time"] or "")
         events = {k: events[k] for k in keys[:args.limit_events]}
         print(f"  limited to the first {len(events)} events")
+
+    if args.spread_events:
+        keys = sorted(events, key=lambda k: events[k]["commence_time"] or "")
+        n = min(args.spread_events, len(keys))
+        if n > 0:
+            # Even stride by kickoff order, so the subsample covers the whole
+            # season rather than only its opening weeks. Taking the first N
+            # would trade hockey's weekday bias for a calendar bias, which is
+            # worse: early-season shot rates and book attention both differ
+            # from midseason.
+            idx = [round(i * (len(keys) - 1) / (n - 1)) for i in range(n)] \
+                if n > 1 else [0]
+            picked = []
+            for j in idx:
+                if keys[j] not in picked:
+                    picked.append(keys[j])
+            events = {k: events[k] for k in picked}
+        print(f"  spread to {len(events)} events across the season")
 
     total_calls = sum(len(targets_for(ev, labels)) for ev in events.values())
     print(f"\n  {len(events)} events, {total_calls} snapshot calls")
