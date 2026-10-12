@@ -42,11 +42,29 @@ THE RULES, AND THEIR PROVENANCE
                                          conjunction_followup.py
        market == 'receiving', air-yards shock z >= 1.0, bet the UNDER,
        EXCEPT where the projection sits well above the line.
-       Lift over the market's own under baseline: +0.086 at z >= 1.0,
-       +0.113 at 1.5, +0.148 at 2.0. About 250 bets/season.
+       Lift over the market's own under baseline: +0.099 at z >= 1.0,
+       +0.126 at 1.5, +0.168 at 2.0. About 340 bets/season.
        Invariant across five definitions of the veto (+0.086 to +0.107).
-       Best-of-grid placebo p = 0.072, which is BORDERLINE, and season ROI
-       decays +0.165, +0.102, +0.070.
+       Best-of-grid placebo p = 0.072, which is BORDERLINE.
+
+       SEASON TREND, CORRECTED 2026-10-12. This block previously said
+       "season ROI decays +0.165, +0.102, +0.070". That does not
+       reproduce. Re-running air_yards_retest.py on seasons 2023 to 2025
+       with a per-season decomposition gives cell ROI +0.1066, +0.0161,
+       +0.0843 and lift +0.1422, +0.0553, +0.0988. Down then up, with
+       2024 the weak year, not a monotone decay. The old figures match no
+       column in that output and the population that produced them is
+       unknown, so they are removed rather than restated.
+       Lift is positive in all three seasons. At roughly 340 bets a season
+       the swing is within noise, so the honest reading is NO VISIBLE
+       TREND either way, not that the rule is holding up.
+
+       WHAT DID CHANGE: the receiving market's own under baseline ran
+       -0.0356, -0.0392, -0.0146, so the structural under bias roughly
+       halved by 2025. Receptions moved the same way, -0.0356 to +0.0003.
+       The free part of the return is eroding; the rule's edge over it is
+       not. Those are different claims and the earlier text conflated
+       them.
        The MODEL IS A VETO, NOT A CONFIRMATION. Inside the rule cell the
        under-side ROI by dev quintile runs +0.100, +0.079, +0.127, +0.086,
        -0.117. So the projection identifies one bad bucket and adds nothing
@@ -241,11 +259,25 @@ def _air_yards_history(seasons, targets=()):
             t_season, t_week = int(tgt[0]), int(tgt[1])
         except (TypeError, ValueError, IndexError):
             continue
-        # ONLY when the week is genuinely unplayed. If any stat row exists for
-        # it, the exact merge is authoritative and must not be shadowed.
-        if len(ps[(ps["season"] == t_season) & (ps["week"] == t_week)]):
-            continue
-        for _gk, grp in ps.groupby(key, sort=False):
+        # PER PLAYER, not per week. A week is often PARTIALLY played: on the
+        # Monday of week 5, nflverse has rows for the players whose games
+        # finished and none for that night's game. Keying the carrier on
+        # "does this week have any rows" meant the only props still bettable
+        # were the ones that got no shock. Measured 2026-10-09: on a
+        # partially played week, the already-played team got its 10 history
+        # rows and that night's team got 0, eligible 10, fired 0.
+        have = set(ps.loc[(ps["season"] == t_season)
+                          & (ps["week"] == t_week), key].tolist())
+        # STRICTLY BEFORE the target week. This is what makes the per-player
+        # form leakage-free: taking the tail of a player's whole series would
+        # read their LATER games back into an earlier target week. Safe only
+        # while the target was guaranteed to be in the future, which is
+        # exactly the assumption that just broke.
+        prior = ps[(ps["season"] < t_season)
+                   | ((ps["season"] == t_season) & (ps["week"] < t_week))]
+        for gk, grp in prior.groupby(key, sort=False):
+            if gk in have:
+                continue      # exact merge is authoritative, do not shadow it
             vals = grp[col].to_numpy()
             n = len(vals)
             # Mirrors the rolling spec exactly. At a row one past the end,
@@ -457,9 +489,13 @@ def describe():
         "RECEIVING AIR-YARDS UNDER",
         f"  market == 'receiving', z >= {AIR_YARDS_Z_TRIGGER} -> UNDER,",
         "  except where the projection sits above the veto cutoff",
-        "  lift over the market's under baseline +0.086, ~250 bets/season",
+        "  lift over the market's under baseline +0.099, ~340 bets/season",
         "  best-of-grid placebo p = 0.072 (BORDERLINE)",
-        "  season ROI decays +0.165, +0.102, +0.070",
+        "  lift by season +0.142, +0.055, +0.099. Positive in all three,",
+        "    no monotone trend, and the swing is within noise at ~340 bets",
+        "  the market's own under bias halved over the same period",
+        "    (-0.036, -0.039, -0.015), so the FREE part of the return is",
+        "    eroding even though the rule's edge over it is not",
         "  the model is a VETO, not a confirmation",
         "  source: air_yards_retest.py, conjunction_followup.py",
         f"  calibrated: {is_calibrated('receiving')}",

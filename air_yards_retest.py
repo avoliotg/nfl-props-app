@@ -300,6 +300,57 @@ def section_lift(p, results, n_boot):
         print("    but not the baseline has found nothing beyond the bias")
         print("    already measured in under_bias.py.")
 
+        # --- per-season decomposition -----------------------------------
+        #
+        # WHY THIS IS HERE. rules.describe() tells the user "season ROI
+        # decays +0.165, +0.102, +0.070", which reads as a rule weakening.
+        # But section 2's per-season COEFFICIENTS move the other way,
+        # monotonically stronger. Both can be true at once, because
+        # lift = ROI - baseline and the baseline is not constant across
+        # seasons. If the structural under bias shrank, raw ROI can fall
+        # while the edge OVER baseline holds or grows.
+        #
+        # z STAYS POOLED. It is standardised on all seasons together, which
+        # is what the live rule does with fixed CALIBRATION constants.
+        # Re-standardising within season would redefine the cell each year
+        # and the columns would not be comparable.
+        if "season" not in g0.columns:
+            continue
+        print()
+        print(f"    PER SEASON at z>=+1.0, pooled z, baseline recomputed")
+        print(f"    {'season':>8}{'bets':>7}{'cell ROI':>10}{'baseline':>10}"
+              f"{'lift':>9}")
+        cell10 = g0[g0["_z"] >= 1.0]
+        seasons_here = sorted(g0["season"].dropna().unique().tolist())
+        rois, lifts = [], []
+        for s in seasons_here:
+            cs = cell10[cell10["season"] == s]
+            gs = g0[g0["season"] == s]
+            if not len(cs) or not len(gs):
+                continue
+            r_ = float(cs["_roi"].mean())
+            b_ = float(gs[col].mean())
+            rois.append(r_)
+            lifts.append(r_ - b_)
+            print(f"    {int(s):>8}{len(cs):>7,}{r_:>+10.4f}{b_:>+10.4f}"
+                  f"{r_ - b_:>+9.4f}")
+
+        def _trend(v):
+            if len(v) < 2:
+                return "too few seasons"
+            if all(v[i] > v[i + 1] for i in range(len(v) - 1)):
+                return "falling monotonically"
+            if all(v[i] < v[i + 1] for i in range(len(v) - 1)):
+                return "RISING monotonically"
+            return "no monotone trend"
+
+        print()
+        print(f"      raw cell ROI: {_trend(rois)}")
+        print(f"      lift over baseline: {_trend(lifts)}")
+        print("      If raw ROI falls while lift holds or rises, the rule is")
+        print("      not weakening: the free part of its return is. The")
+        print("      describe() text would then be misleading as written.")
+
 
 def section_honesty(results):
     _rule("SECTION 5: WHAT THIS DOES AND DOES NOT ESTABLISH")
