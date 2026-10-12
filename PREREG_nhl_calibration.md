@@ -70,7 +70,17 @@ repeated claim and is now corrected.
 
 ### Population
 
-- `historical_lines`, `sport = 'NHL'`, `snapshot_label = 'closing'`
+- `historical_lines`, `sport = 'NHL'`, **`snapshot_label = 'closing_nhl'`**
+
+  CORRECTED 2026-10-12. This document originally said `'closing'`, which is
+  what `odds_backfill.py` writes, and a grouped query on 2026-10-09 confirmed
+  3,097 NHL rows under that label. By 2026-10-12 there were none: all NHL
+  rows read `'closing_nhl'`. A repo-wide grep returns nothing, so no script
+  produces it and it was a manual UPDATE, unattributed. The reason is sound:
+  `eval_harness.fetch_lines` filters on `snapshot_label = 'closing'` and has
+  **no sport filter**, so the suffix is the only thing keeping NHL rows out
+  of every NFL research script. Filtering on the old value returned zero rows
+  and cost a run.
 - `book = 'fanduel'` only. Cross-book and best-price settlement is a closed
   route, negative at -10.0% against +14.8% FanDuel-only.
 - **The 40 pilot events are EXCLUDED.** Bin edges below were chosen by
@@ -292,9 +302,26 @@ Checked and reported before the primary result is read.
    narrower than the pilot's 0.3694 to 0.6361, the power table above is
    optimistic and the revised MDE is reported.
 5. **Reproduction gate.** The analysis script must reproduce the pilot's
-   published figures (hold 1.0651, sd 0.0736, 2.1% symmetric, the four line
-   values) before producing any new number. This is a hard gate. It caught the
-   `split_qb_rushing` omission in `gap_test.py`.
+   published figures before producing any new number. Hard gate. The
+   equivalent caught the `split_qb_rushing` omission in `gap_test.py`.
+
+   **AMENDED 2026-10-12: an EXACT reproduction is no longer possible.**
+   The pilot was published as 523 FanDuel rows across 39 events. It now holds
+   535 across 40. The difference is one game: the event that had no FanDuel
+   rows when the pilot ran gained them afterwards. The tolerances were NOT
+   widened until the old numbers passed, because that would defeat the gate.
+   Instead the gate now checks what a 12-row growth cannot move, and fails on
+   anything structural:
+   - hold within 0.0010 of 1.0651
+   - sd of devigged p within 0.0040 of 0.0736
+   - symmetric share within 1.5 points of 2.1
+   - every line value inside the known set {0.5, 1.5, 2.5, 3.5, 4.5}, with
+     counts printed but not gated
+   - the lowest-id block must SPAN the season. `--spread-events 40` produces
+     an even stride, so a block confined to October would be the first 40
+     games of the full run and the pilot identification would be wrong.
+   The row and event counts are printed against published either way, so the
+   discrepancy stays visible rather than absorbed.
 
 ---
 

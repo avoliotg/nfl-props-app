@@ -29,7 +29,12 @@ def devig(over_odds, under_odds):
     u = np.asarray(under_odds, dtype=float)
 
     def implied(a):
-        return np.where(a < 0, -a / (-a + 100.0), 100.0 / (a + 100.0))
+        # np.where evaluates BOTH branches, so odds of exactly -100 (even
+        # money) make the positive branch divide by zero even though that
+        # value is then discarded. Suppressed rather than left to print a
+        # warning that looks like a data problem and is not.
+        with np.errstate(invalid="ignore", divide="ignore"):
+            return np.where(a < 0, -a / (-a + 100.0), 100.0 / (a + 100.0))
 
     io, iu = implied(o), implied(u)
     s = io + iu
